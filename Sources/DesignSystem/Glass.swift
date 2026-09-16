@@ -74,19 +74,4 @@ extension View {
         modifier(AppGlassModifier(shape: shape, glass: glass))
     }
 
-    /// Glass that takes part in **the** morph.
-    ///
-    /// Grove uses `.matchedGeometry` in exactly one place — the workspace
-    /// switcher's pill becoming its panel — and that restraint is why it reads
-    /// as special rather than as a busy app. The identity goes on the same view
-    /// as the glass, inside a `GlassEffectContainer`, or the two shapes have
-    /// nothing to morph between.
-    ///
-    /// Under Reduce Transparency ``appGlass`` draws an opaque surface instead,
-    /// and the identity harmlessly has no effect to carry.
-    func appGlassMorph<S: Shape>(
-        id: some Hashable & Sendable, in namespace: Namespace.ID, shape: S
-    ) -> some View {
-        appGlass(.regular, in: shape).glassEffectID(id, in: namespace)
-    }
 }

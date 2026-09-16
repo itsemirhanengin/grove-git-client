@@ -43,8 +43,10 @@ enum Metrics {
 
 /// Motion, funnelled through one place so Reduce Motion cannot be forgotten.
 ///
-/// Only one moment in Grove uses `.matchedGeometry` — the workspace switcher
-/// morph. That restraint is *why* it reads as special.
+/// Nothing uses `morph` at present. The workspace switcher did, until it became
+/// a plain dropdown on 2026-09-16 — the owner wanted it to float over the list
+/// rather than push it down, and a much quieter animation than a matched
+/// geometry morph. It is kept for the next thing that earns an entrance.
 enum Motion {
     static func morph(reduceMotion: Bool) -> Animation {
         reduceMotion ? .linear(duration: 0.01) : .smooth(duration: 0.32, extraBounce: 0.02)

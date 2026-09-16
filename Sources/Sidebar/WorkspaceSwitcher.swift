@@ -1,35 +1,49 @@
 import SwiftUI
 
-/// The workspace switcher: the pill at the top of the sidebar that opens into
-/// the list of recent workspaces.
+/// The workspace switcher: the pill at the top of the sidebar, and the dropdown
+/// it opens.
 ///
-/// It is **anchored in the sidebar**, not shown in a `.popover`. A popover is a
-/// separate window, and glass cannot matched-geometry across one — the morph
-/// this control exists for would degrade into a cross-fade. The cost is that
-/// the panel pushes the list down rather than floating over the whole window,
-/// which is the right trade: this is the one moment in Grove that animates.
+/// The dropdown **floats over** the sidebar rather than pushing it down. It is
+/// an overlay in the same window, not a `.popover`: a popover is a separate
+/// window with its own arrow and chrome, and this needs to read as part of the
+/// sidebar.
+///
+/// It no longer morphs. The matched-geometry version was replaced on
+/// 2026-09-16 — the owner wanted a dropdown that covers the list and a much
+/// quieter animation, and the morph was the reason the panel had to be inline
+/// in the first place.
 struct WorkspaceSwitcher: View {
     let model: AppModel
 
-    @State private var isOpen = false
-    @Namespace private var morph
+    @Binding var isOpen: Bool
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// How much vertical room the pill needs, including its padding. The
+    /// sidebar list insets by exactly this, and the dropdown starts here.
+    static var barHeight: CGFloat { Metrics.switcherPill + Space.md * 2 }
 
     private var others: [URL] {
         model.recentWorkspaces.filter { $0.path() != model.workspace?.root.path() }
     }
 
     var body: some View {
-        GlassEffectContainer(spacing: Space.md) {
-            VStack(alignment: .leading, spacing: Space.md) {
-                pill
-                if isOpen { panel }
+        pill
+            .padding(.horizontal, Space.md)
+            .padding(.vertical, Space.md)
+            .overlay(alignment: .top) {
+                if isOpen {
+                    panel
+                        .padding(.horizontal, Space.md)
+                        .offset(y: Self.barHeight)
+                        // Opacity and a slight settle from the top edge. Enough
+                        // to say where it came from, not enough to watch.
+                        .transition(
+                            .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
+                        )
+                }
             }
-        }
-        .glassEffectTransition(.matchedGeometry)
-        .animation(Motion.morph(reduceMotion: reduceMotion), value: isOpen)
-        .padding(.horizontal, Space.md)
-        .padding(.vertical, Space.md)
+            .animation(Motion.standard(reduceMotion: reduceMotion), value: isOpen)
     }
 
     // MARK: Pill
@@ -68,7 +82,7 @@ struct WorkspaceSwitcher: View {
             .contentShape(.capsule)
         }
         .buttonStyle(.plain)
-        .appGlassMorph(id: MorphID.pill, in: morph, shape: .capsule)
+        .appGlass(in: .capsule)
         .accessibilityLabel("Workspace")
         .accessibilityValue(model.workspace?.name ?? "None")
         .accessibilityHint(isOpen ? "Closes the workspace list" : "Opens the workspace list")
@@ -84,7 +98,7 @@ struct WorkspaceSwitcher: View {
         return changes == 0 ? repoLabel : "\(repoLabel) · \(changes) changes"
     }
 
-    // MARK: Panel
+    // MARK: Dropdown
 
     private var panel: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -96,8 +110,8 @@ struct WorkspaceSwitcher: View {
                     .frame(height: Metrics.fileRow)
             } else {
                 // Not a `List`: this is a bounded set — eight at most, by
-                // `AppStateStore.recentLimit` — and a scroll view inside the
-                // sidebar's own scroll view is a worse thing to use than a stack.
+                // `AppStateStore.recentLimit` — and a scroll view floating over
+                // the sidebar's own scroll view is a worse thing to use.
                 ForEach(others, id: \.self) { url in
                     WorkspaceRow(
                         url: url,
@@ -130,16 +144,7 @@ struct WorkspaceSwitcher: View {
         }
         .padding(.vertical, Space.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .appGlassMorph(id: MorphID.panel, in: morph, shape: .rect(cornerRadius: Radius.lg))
-    }
-
-    /// The two ends of the morph. An enum rather than strings, so a typo cannot
-    /// silently produce two unrelated identities and a cross-fade.
-    /// `nonisolated`, or its `Hashable` conformance is main-actor-isolated and
-    /// cannot satisfy `appGlassMorph`'s `Sendable` requirement.
-    private nonisolated enum MorphID: Hashable, Sendable {
-        case pill
-        case panel
+        .appGlass(in: .rect(cornerRadius: Radius.lg))
     }
 }
 

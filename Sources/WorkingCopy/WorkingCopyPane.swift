@@ -11,11 +11,16 @@ import SwiftUI
 struct WorkingCopyPane: View {
     @Bindable var repo: RepoViewModel
 
+    /// Needed only to route selection through ``WorkspaceModel/select(_:staged:in:)``,
+    /// so that a file opened here and a file opened in the Overview are the
+    /// same kind of event.
+    let workspace: WorkspaceModel
+
     var body: some View {
         VStack(spacing: 0) {
             CommitComposer(repo: repo)
             Divider()
-            ChangeList(repo: repo)
+            ChangeList(repo: repo, workspace: workspace)
         }
     }
 }
@@ -81,6 +86,7 @@ private struct CommitComposer: View {
 
 private struct ChangeList: View {
     let repo: RepoViewModel
+    let workspace: WorkspaceModel
 
     var body: some View {
         ScrollView {
@@ -133,10 +139,7 @@ private struct ChangeList: View {
                         onDiscard: staged ? nil : { repo.requestDiscard([change]) },
                         isSelected: repo.selectedChange
                             == SelectedChange(change: change, staged: staged),
-                        onSelect: {
-                            repo.selectedChange = SelectedChange(
-                                change: change, staged: staged)
-                        }
+                        onSelect: { workspace.select(change, staged: staged, in: repo) }
                     )
                     .padding(.horizontal, Space.lg)
                 }

@@ -74,7 +74,7 @@ Corrections worth keeping:
 | 9 | Side-by-side, word diff, syntax highlighting | ✅ — comes from the renderer |
 | 10 | Hunk/line staging (`PatchBuilder`) | ✅ — parser is back, see below |
 | 11 | FSEvents live refresh | ✅ — see "Live refresh" |
-| 12 | Persistence + workspace switcher (the glass morph) | ✅ |
+| 12 | Persistence + workspace switcher | ✅ — the morph was dropped, see below |
 | 13 | fetch/pull/push, branch switch, merge | ⬜ |
 | 14 | Conflict resolver | ⬜ |
 | 15 | History + commit graph | ⬜ |
@@ -183,7 +183,7 @@ renderer shipped blank twice. Worth a session. Likely leads: a test host with th
 WebKit entitlements, an XCTest UI-test target instead of a unit target, or
 driving the page in `safari`/`node` against the built `Web/DiffRenderer`.
 
-Counts as of this handoff: **30 DiffCore tests + 148 app tests**, 3 of the app
+Counts as of this handoff: **30 DiffCore tests + 151 app tests**, 3 of the app
 tests disabled as above. Recount after any change.
 
 ---
@@ -346,6 +346,14 @@ as one — the stream itself cannot be tested without a filesystem race.
 without it FSEvents reports the *directory*, and `.git` changing says nothing
 about whether it was `index` or `index.lock`.
 
+### A test that has to ignore its own setup
+
+`kFSEventStreamEventIdSinceNow` with `NoDefer` still delivers the tail of the
+directory the test just created, and under a loaded machine that lands *during*
+the arming sleep. `RepoWatcherTests` therefore clears what it collected after
+arming and before writing anything — otherwise its quiet half asserts against an
+event nobody wrote, passing alone and failing in a full parallel run.
+
 ### Timing
 
 FSEvents latency 0.2 s, then a 300 ms debounce, **capped at 2 s**. The cap is
@@ -400,22 +408,42 @@ then the Debug-only `Fixtures/` fallback.
 
 ### The switcher
 
-`Sources/Sidebar/WorkspaceSwitcher.swift`, in a `safeAreaBar(edge: .top)` on the
-sidebar list. It is the **only** place Grove uses `.matchedGeometry`, and that
-restraint is why it reads as special.
+`Sources/Sidebar/WorkspaceSwitcher.swift`. A pill at the top of the sidebar and
+a dropdown that **floats over** the list.
 
-- Anchored in the sidebar, **not** a `.popover`. A popover is a separate window
-  and glass cannot matched-geometry across one; the morph would degrade to a
-  cross-fade. The cost is that the panel pushes the list down instead of
-  floating over the window — the right trade here.
-- The morph goes through `appGlassMorph(id:in:shape:)` in `Glass.swift`, so the
-  Reduce Transparency and Increase Contrast fallbacks still apply and the
-  one-file glass rule holds.
-- Its two identities are a `nonisolated enum`. A nested enum in a MainActor view
-  gets a main-actor-isolated `Hashable` conformance, which cannot satisfy
-  `glassEffectID`'s `Sendable` requirement.
+**The matched-geometry morph is gone.** It shipped on 2026-09-16 and the owner
+replaced it the same day: he wanted the panel to cover the list rather than push
+it down, and a far quieter animation. Both of those remove the reason the morph
+existed, so `appGlassMorph` and the `GlassEffectContainer` went with it, and
+`Motion.morph` now has no caller. Do not put it back without asking — decision 5
+below used to name this as the one place `.matchedGeometry` was allowed, and
+that is now "nowhere".
+
+- The dropdown is an **overlay in the same window**, not a `.popover`. A popover
+  is a separate window with its own arrow and chrome; this needs to read as part
+  of the sidebar.
+- `SidebarColumn` is a `ZStack`: the list takes a `safeAreaInset` of
+  `WorkspaceSwitcher.barHeight` for the pill, and the dropdown covers whatever
+  is below it. A transparent layer under the switcher dismisses it on a click
+  anywhere else, and `onExitCommand` handles Escape.
+- The transition is opacity plus a 0.97 scale from the top edge, on
+  `Motion.standard`. Enough to say where it came from, not enough to watch.
 - No ⌘O on the panel's "Open Workspace…": the toolbar already owns that
   shortcut, and two views claiming one is undefined rather than redundant.
+
+### Opening a diff from the Overview
+
+The Overview shows every repository at once, and the sidebar points at none of
+them — so `DetailColumn` had no repository to resolve and clicking a file there
+did nothing at all. `WorkspaceModel.focusedRepoID` records which repository the
+last clicked row belonged to, and `select(_:staged:in:)` clears every other
+repository's selection on the way through: two highlighted rows, only one of
+which is showing, is worse than no highlight.
+
+Both the Overview and the Working Copy list route selection through that one
+method, so a file opened in either place is the same kind of event. The Overview
+stays a reading surface otherwise — no stage or discard buttons there, because
+those belong next to the commit composer where the consequence is visible.
 
 ---
 
@@ -484,7 +512,8 @@ views read it and `@Observable` invalidates only the ones that do.
 5. **Glass floats, content sits.** Glass only on chrome hovering over scrolling
    content; never inside a `ForEach`; never on the diff surface. All of it goes
    through `appGlass` in `DesignSystem/Glass.swift`, enforced by a grep in
-   `scripts/test.sh`.
+   `scripts/test.sh`. Nothing uses `.matchedGeometry` any more — the workspace
+   switcher did until 2026-09-16; see "The switcher".
 6. Red means **removed** and **destructive**, only. Conflicts, warnings and
    errors are amber. Modified is blue. Palette contrast is tested.
 7. AI commit messages via `claude -p` (phase 16), with macOS 27's on-device

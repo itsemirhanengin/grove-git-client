@@ -160,7 +160,14 @@ struct RepoWatcherTests {
 
         watcher.watch([repository])
         // FSEvents arms asynchronously; writing immediately can beat it.
-        try await Task.sleep(for: .milliseconds(400))
+        try await Task.sleep(for: .milliseconds(600))
+
+        // And then forget whatever arming caught. `kFSEventStreamEventIdSinceNow`
+        // plus `NoDefer` means the stream can still deliver the tail of this
+        // test's own `createDirectory` — which under a loaded machine arrives
+        // *during* the sleep above and makes the quiet half below assert against
+        // an event nobody wrote.
+        collector.received.removeAll()
 
         try "".write(to: gitPath.appending(path: "index.lock"), atomically: true, encoding: .utf8)
         try "x".write(to: gitPath.appending(path: "COMMIT_EDITMSG"), atomically: true, encoding: .utf8)

@@ -14,11 +14,19 @@ struct RootView: View {
     @State private var selection: SidebarSelection? = .overview
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
-    /// The repository the window is pointed at, whichever of its sections is
-    /// showing.
+    /// Which repository's diff the column shows.
+    ///
+    /// In a repository section it is whatever the sidebar points at. In the
+    /// **Overview** the sidebar points at no repository at all, so it is
+    /// whichever one owns the row that was last clicked — without this, clicking
+    /// a file in the Overview did nothing at all.
     private var focusedRepo: RepoViewModel? {
-        guard case .repo(let id, _) = selection else { return nil }
-        return model.workspace?.repos.first { $0.id == id }
+        guard let workspace = model.workspace else { return nil }
+        if case .repo(let id, _) = selection {
+            return workspace.repos.first { $0.id == id }
+        }
+        guard let focused = workspace.focusedRepoID else { return nil }
+        return workspace.repos.first { $0.id == focused }
     }
 
     var body: some View {
@@ -142,7 +150,28 @@ private struct SidebarColumn: View {
     let model: AppModel
     @Binding var selection: SidebarSelection?
 
+    @State private var isSwitcherOpen = false
+
     var body: some View {
+        // A `ZStack` so the switcher's dropdown can float over the list instead
+        // of pushing it down. The list reserves the pill's height as a safe-area
+        // inset; everything below that the dropdown simply covers.
+        ZStack(alignment: .top) {
+            list
+
+            if isSwitcherOpen {
+                // Anywhere else in the sidebar dismisses it, the way a menu does.
+                Color.clear
+                    .contentShape(.rect)
+                    .onTapGesture { isSwitcherOpen = false }
+            }
+
+            WorkspaceSwitcher(model: model, isOpen: $isSwitcherOpen)
+        }
+        .onExitCommand { isSwitcherOpen = false }
+    }
+
+    private var list: some View {
         List(selection: $selection) {
             Section("Workspace") {
                 Label("Overview", systemImage: "square.grid.2x2")
@@ -182,9 +211,11 @@ private struct SidebarColumn: View {
         // chrome; `.soft` is for continuous content like code.
         .scrollEdgeEffectStyle(.hard, for: .top)
         .scrollEdgeEffectStyle(.soft, for: .bottom)
-        // In the sidebar rather than a popover — see ``WorkspaceSwitcher`` for
-        // why the morph cannot cross a window boundary.
-        .safeAreaBar(edge: .top, spacing: 0) { WorkspaceSwitcher(model: model) }
+        // Room for the switcher's pill, which is drawn over the list rather than
+        // inside it.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            Color.clear.frame(height: WorkspaceSwitcher.barHeight)
+        }
     }
 
     private func expansion(
@@ -283,10 +314,12 @@ private struct ListColumn: View {
             }
 
         case .repo(let repoID, let section):
-            if let repo = model.workspace?.repos.first(where: { $0.id == repoID }) {
+            if let workspace = model.workspace,
+                let repo = workspace.repos.first(where: { $0.id == repoID })
+            {
                 switch section {
                 case .workingCopy:
-                    WorkingCopyPane(repo: repo)
+                    WorkingCopyPane(repo: repo, workspace: workspace)
                 default:
                     ContentUnavailableView(
                         section.title,
@@ -356,14 +389,14 @@ private struct WorkspaceOverview: View {
                 // that actually blocks the user disappear from the list.
                 group(
                     "Conflicts", repo.displayedConflicted,
-                    total: repo.status.conflicted.count, staged: false)
+                    total: repo.status.conflicted.count, staged: false, in: repo)
                 group(
                     "Staged", repo.displayedStaged,
-                    total: repo.status.staged.count, staged: true)
+                    total: repo.status.staged.count, staged: true, in: repo)
                 group(
                     "Changes", repo.displayedUnstaged,
                     total: repo.status.unstaged.count + repo.status.untracked.count,
-                    staged: false)
+                    staged: false, in: repo)
 
                 if repo.hasMoreThanDisplayed {
                     OverflowRow(hidden: repo.hiddenRowCount)
@@ -378,12 +411,23 @@ private struct WorkspaceOverview: View {
     /// quietly under-report how much work is uncommitted.
     @ViewBuilder
     private func group(
-        _ title: String, _ changes: [FileChange], total: Int, staged: Bool
+        _ title: String, _ changes: [FileChange], total: Int, staged: Bool,
+        in repo: RepoViewModel
     ) -> some View {
         if !changes.isEmpty {
             GroupLabelRow(title: title, count: total, shown: changes.count)
             ForEach(changes.map { ChangeRowItem(change: $0, staged: staged) }) { item in
-                ChangeRow(change: item.change, staged: staged)
+                let change = item.change
+                ChangeRow(
+                    change: change,
+                    staged: staged,
+                    // The Overview is a reading surface: it opens diffs and does
+                    // not offer stage or discard. Those belong next to the
+                    // commit composer, where the consequence is visible.
+                    isSelected: workspace.focusedRepoID == repo.id
+                        && repo.selectedChange == SelectedChange(change: change, staged: staged),
+                    onSelect: { workspace.select(change, staged: staged, in: repo) }
+                )
             }
         }
     }
@@ -423,9 +467,19 @@ private struct DetailColumn: View {
         }
     }
 
+    /// Which repository's diff the column shows.
+    ///
+    /// In a repository section it is whatever the sidebar points at. In the
+    /// **Overview** the sidebar points at no repository at all, so it is
+    /// whichever one owns the row that was last clicked — without this, clicking
+    /// a file in the Overview did nothing at all.
     private var focusedRepo: RepoViewModel? {
-        guard case .repo(let id, _) = selection else { return nil }
-        return model.workspace?.repos.first { $0.id == id }
+        guard let workspace = model.workspace else { return nil }
+        if case .repo(let id, _) = selection {
+            return workspace.repos.first { $0.id == id }
+        }
+        guard let focused = workspace.focusedRepoID else { return nil }
+        return workspace.repos.first { $0.id == focused }
     }
 }
 

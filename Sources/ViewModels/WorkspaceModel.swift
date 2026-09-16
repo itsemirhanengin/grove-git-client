@@ -27,6 +27,14 @@ final class WorkspaceModel: Identifiable {
     /// Told when the collapsed set changes, so it can be written to disk.
     var onCollapsedReposChange: ((Set<String>) -> Void)?
 
+    /// Which repository owns the diff currently on screen.
+    ///
+    /// The selection itself lives on the repository, because that is what the
+    /// diff needs. But the **Overview** shows every repository at once and the
+    /// sidebar points at none of them, so something has to say which one the
+    /// last click belonged to. This is it.
+    var focusedRepoID: RepoID?
+
     /// Scope and filter from the accessory bar.
     var scope: RepoScope = .all
     var filterText: String = ""
@@ -126,6 +134,19 @@ final class WorkspaceModel: Identifiable {
     /// showing them costs little.
     func isExpanded(_ repo: RepoViewModel) -> Bool {
         repo.expansionOverride ?? true
+    }
+
+    /// Opens a change's diff, from anywhere.
+    ///
+    /// Clears every other repository's selection as it goes: two highlighted
+    /// rows in the Overview, only one of which is showing, is worse than no
+    /// highlight at all.
+    func select(_ change: FileChange, staged: Bool, in repo: RepoViewModel) {
+        for other in repos where other.id != repo.id {
+            other.selectedChange = nil
+        }
+        repo.selectedChange = SelectedChange(change: change, staged: staged)
+        focusedRepoID = repo.id
     }
 
     /// The user's own expand/collapse, recorded so it survives a relaunch.

@@ -16,7 +16,7 @@ struct BranchPill: View {
                 // what matters for names like `feature/…/fix-login`.
                 .truncationMode(.middle)
         }
-        .foregroundStyle(isDetached ? .orange : .secondary)
+        .foregroundStyle(isDetached ? Palette.attention.color : Color.secondary)
         .padding(.horizontal, Space.sm)
         .padding(.vertical, 1)
         .background(.quaternary, in: .capsule)
@@ -49,7 +49,7 @@ struct AheadBehindBadge: View {
                 }
             }
             .font(.system(size: 9).monospacedDigit())
-            .foregroundStyle(hasDiverged ? .orange : .secondary)
+            .foregroundStyle(hasDiverged ? Palette.attention.color : Color.secondary)
             .help(helpText)
         }
     }
@@ -90,6 +90,8 @@ struct ChangeRow: View {
     let change: FileChange
     let staged: Bool
 
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+
     var body: some View {
         HStack(spacing: Space.sm) {
             Text(change.singleLineFileName)
@@ -108,34 +110,22 @@ struct ChangeRow: View {
 
             Spacer(minLength: Space.xs)
 
-            Text(statusLetter)
+            // Status is encoded redundantly — letter, colour, and (in the diff)
+            // the +/- sign — so it survives both colour blindness and the
+            // Differentiate Without Color setting.
+            if differentiateWithoutColor {
+                Rectangle()
+                    .fill(change.tint(staged: staged))
+                    .frame(width: 2, height: 12)
+            }
+
+            Text(change.statusLetter(staged: staged))
                 .font(Typography.statusLetter)
-                .foregroundStyle(statusColor)
+                .foregroundStyle(change.tint(staged: staged))
                 .frame(width: 14, alignment: .trailing)
         }
         .frame(height: Metrics.fileRow)
         .opacity(change.worktreeStatus == .deleted && !staged ? 0.6 : 1)
         .help(change.singleLineDisplayPath)
-    }
-
-    private var statusLetter: String {
-        if change.isConflicted { return "U" }
-        if change.kind == .untracked { return "?" }
-        let code = staged ? change.indexStatus : change.worktreeStatus
-        return code.letter
-    }
-
-    /// Modified is blue and conflict is amber on purpose. Using yellow for both,
-    /// as some clients do, makes a conflict indistinguishable from an ordinary
-    /// edit — and red stays reserved for deletions and destructive actions.
-    private var statusColor: Color {
-        if change.isConflicted { return .orange }
-        switch statusLetter {
-        case "A": return .green
-        case "D": return .red
-        case "R", "C": return .purple
-        case "?": return .teal
-        default: return .blue
-        }
     }
 }

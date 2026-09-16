@@ -1,5 +1,23 @@
 import SwiftUI
 
+/// Forces an accessibility setting on, for previews and tests.
+///
+/// `accessibilityReduceTransparency` and `colorSchemeContrast` are **read-only**
+/// environment values — SwiftUI does not let you write them — so there is
+/// otherwise no way to see the Reduce Transparency path without changing System
+/// Settings. That is exactly the kind of check that quietly stops happening, so
+/// the design system reads this override first and the real setting second.
+nonisolated struct AccessibilityOverride: Equatable, Sendable {
+    var reduceTransparency: Bool?
+    var increaseContrast: Bool?
+
+    static let none = AccessibilityOverride()
+}
+
+extension EnvironmentValues {
+    @Entry var accessibilityOverride = AccessibilityOverride.none
+}
+
 /// The **only** file in Grove allowed to call `glassEffect`. `scripts/test.sh`
 /// fails the build if that call appears anywhere else.
 ///
@@ -17,16 +35,25 @@ struct AppGlassModifier<S: Shape>: ViewModifier {
     let shape: S
     var glass: Glass = .regular
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceTransparency) private var systemReduceTransparency
+    @Environment(\.colorSchemeContrast) private var systemContrast
+    @Environment(\.accessibilityOverride) private var override
+
+    private var reduceTransparency: Bool {
+        override.reduceTransparency ?? systemReduceTransparency
+    }
+
+    private var increaseContrast: Bool {
+        override.increaseContrast ?? (systemContrast == .increased)
+    }
 
     func body(content: Content) -> some View {
         if reduceTransparency {
             // Not "glass with less blur" — a genuinely opaque surface.
             content
-                .background(Color(nsColor: .controlBackgroundColor), in: shape)
+                .background(Palette.surfaceElevated.color, in: shape)
                 .overlay(shape.stroke(Color(nsColor: .separatorColor), lineWidth: 1))
-        } else if contrast == .increased {
+        } else if increaseContrast {
             content
                 .glassEffect(glass, in: shape)
                 .overlay(shape.stroke(Color.primary.opacity(0.28), lineWidth: 1))

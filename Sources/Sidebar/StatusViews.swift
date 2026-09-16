@@ -111,6 +111,18 @@ struct OverflowRow: View {
     }
 }
 
+/// A change as it appears in one particular group.
+///
+/// A file that is staged *and* modified again appears in two groups at once, so
+/// the change's own id is not unique within the list. Two sibling `ForEach`es
+/// sharing an id makes SwiftUI treat them as the same element and drop one — it
+/// renders as a blank row. Qualifying the id with the group fixes it.
+struct ChangeRowItem: Identifiable {
+    let change: FileChange
+    let staged: Bool
+    var id: String { (staged ? "staged:" : "unstaged:") + change.displayPath }
+}
+
 /// One changed file.
 struct ChangeRow: View {
     let change: FileChange

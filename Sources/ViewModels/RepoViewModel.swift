@@ -109,6 +109,8 @@ final class RepoViewModel: Identifiable {
         case .authenticationRequired: return "Authentication required"
         case .networkUnreachable: return "Network unreachable"
         case .unbornBranch: return "No commits yet"
+        case .emptyCommitMessage: return "Write a commit message first"
+        case .nothingToCommit: return "Nothing staged to commit"
         case .timedOut: return "git timed out"
         case .cancelled: return "Cancelled"
         case .commandFailed(_, _, let stderr):
@@ -165,10 +167,135 @@ final class RepoViewModel: Identifiable {
         }
     }
 
+    /// Awaits whatever mutation is in flight. Used by tests.
+    func waitForOperation() async {
+        await currentOperation?.value
+    }
+
     /// Branches are fetched lazily — the sidebar only needs the current branch
     /// name, which `status` already provides for free.
     func loadBranchesIfNeeded() async {
         guard branches.isEmpty else { return }
         branches = (try? await engine.branches()) ?? []
+    }
+
+    // MARK: - Mutations
+
+    /// A discard waiting for the user to confirm it.
+    ///
+    /// Held as state rather than run immediately, because a confirmation sheet
+    /// that just says "Are you sure?" is worthless — the user needs to see the
+    /// exact files that are about to lose their changes.
+    struct PendingDiscard: Identifiable {
+        let id = UUID()
+        let changes: [FileChange]
+
+        var trackedCount: Int { changes.count { $0.kind != .untracked } }
+        var untrackedCount: Int { changes.count { $0.kind == .untracked } }
+    }
+
+    /// The result of the last discard, so the UI can say where the work went
+    /// instead of silently succeeding.
+    struct DiscardReceipt: Identifiable {
+        let id = UUID()
+        let outcome: RepoEngine.DiscardOutcome
+    }
+
+    /// The mutation currently running, exposed so tests can await the work a
+    /// button kicks off instead of polling for it.
+    private(set) var currentOperation: Task<Void, Never>?
+
+    var pendingDiscard: PendingDiscard?
+    var lastDiscard: DiscardReceipt?
+    var operationError: GitError?
+    var isBusy = false
+
+    var canCommit: Bool {
+        !isBusy
+            && !draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !status.staged.isEmpty
+    }
+
+    func stage(_ changes: [FileChange]) {
+        perform { try await $0.stage(changes) }
+    }
+
+    func unstage(_ changes: [FileChange]) {
+        perform { try await $0.unstage(changes) }
+    }
+
+    func stageAll() {
+        stage(status.unstaged + status.untracked + status.conflicted)
+    }
+
+    func unstageAll() {
+        unstage(status.staged)
+    }
+
+    /// Asks before discarding. Always — this is the only operation that can
+    /// destroy work the user has not committed.
+    func requestDiscard(_ changes: [FileChange]) {
+        guard !changes.isEmpty else { return }
+        pendingDiscard = PendingDiscard(changes: changes)
+    }
+
+    func confirmPendingDiscard() {
+        guard let pending = pendingDiscard else { return }
+        pendingDiscard = nil
+
+        currentOperation = Task { [weak self] in
+            guard let self else { return }
+            self.isBusy = true
+            defer { self.isBusy = false }
+            do {
+                let outcome = try await self.engine.discard(pending.changes)
+                self.lastDiscard = DiscardReceipt(outcome: outcome)
+            } catch let error as GitError {
+                self.operationError = error
+            } catch {
+                self.operationError = .commandFailed(
+                    command: "discard", exitCode: -1, stderr: "\(error)")
+            }
+            await self.performRefresh()
+        }
+    }
+
+    func cancelPendingDiscard() {
+        pendingDiscard = nil
+    }
+
+    func commit(amend: Bool = false) {
+        let message = draftMessage
+        perform { engine in
+            try await engine.commit(message: message, amend: amend)
+        } onSuccess: { [weak self] in
+            // Only clear the draft once git has actually accepted it. Clearing
+            // optimistically would lose the message whenever a commit hook
+            // rejects the commit.
+            self?.draftMessage = ""
+        }
+    }
+
+    /// Runs a mutation, then refreshes. Errors land in `operationError` rather
+    /// than an alert, so a failure in one repository never interrupts the others.
+    private func perform(
+        _ body: @escaping @Sendable (RepoEngine) async throws -> Void,
+        onSuccess: (@MainActor () -> Void)? = nil
+    ) {
+        currentOperation = Task { [weak self] in
+            guard let self else { return }
+            self.isBusy = true
+            defer { self.isBusy = false }
+            do {
+                try await body(self.engine)
+                onSuccess?()
+            } catch let error as GitError {
+                self.operationError = error
+            } catch {
+                self.operationError = .commandFailed(
+                    command: "operation", exitCode: -1, stderr: "\(error)")
+            }
+            await self.performRefresh()
+        }
     }
 }

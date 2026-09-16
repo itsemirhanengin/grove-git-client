@@ -248,12 +248,25 @@ private struct ListColumn: View {
                 )
             }
 
-        case .repo(_, let section):
-            ContentUnavailableView(
-                section.title,
-                systemImage: section.symbol,
-                description: Text("Coming in a later phase.")
-            )
+        case .repo(let repoID, let section):
+            if let repo = model.workspace?.repos.first(where: { $0.id == repoID }) {
+                switch section {
+                case .workingCopy:
+                    WorkingCopyPane(repo: repo)
+                default:
+                    ContentUnavailableView(
+                        section.title,
+                        systemImage: section.symbol,
+                        description: Text("Coming in a later phase.")
+                    )
+                }
+            } else {
+                ContentUnavailableView(
+                    "Repository unavailable",
+                    systemImage: "questionmark.folder",
+                    description: Text("It may have been removed from the workspace.")
+                )
+            }
         }
     }
 }
@@ -335,8 +348,8 @@ private struct WorkspaceOverview: View {
     ) -> some View {
         if !changes.isEmpty {
             GroupLabelRow(title: title, count: total, shown: changes.count)
-            ForEach(changes) { change in
-                ChangeRow(change: change, staged: staged)
+            ForEach(changes.map { ChangeRowItem(change: $0, staged: staged) }) { item in
+                ChangeRow(change: item.change, staged: staged)
             }
         }
     }

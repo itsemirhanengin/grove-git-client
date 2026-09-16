@@ -1,0 +1,106 @@
+name: Grove
+
+options:
+  bundleIdPrefix: com.emirhanengin
+  deploymentTarget:
+    macOS: "27.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+packages:
+  DiffCore:
+    path: Packages/DiffCore
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    MACOSX_DEPLOYMENT_TARGET: "27.0"
+
+    # Sandbox OFF: Grove spawns `git` and `claude`. Xcode 26/27 auto-generate an
+    # entitlements file from these settings, so they must be set explicitly —
+    # leaving them unset can silently produce a sandboxed app whose spawn fails.
+    ENABLE_APP_SANDBOX: NO
+    ENABLE_USER_SELECTED_FILES: NO
+    ENABLE_HARDENED_RUNTIME: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: YES
+    DEVELOPMENT_TEAM: ""
+
+    GENERATE_INFOPLIST_FILE: NO
+    DEAD_CODE_STRIPPING: YES
+    CLANG_ENABLE_MODULE_VERIFIER: NO
+  configs:
+    Debug:
+      SWIFT_COMPILATION_MODE: incremental
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+      ONLY_ACTIVE_ARCH: YES
+    Release:
+      SWIFT_COMPILATION_MODE: wholemodule
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+targets:
+  Grove:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+    dependencies:
+      - package: DiffCore
+        product: DiffCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.emirhanengin.grove
+        PRODUCT_NAME: Grove
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_PREVIEWS: YES
+        COMBINE_HIDPI_IMAGES: YES
+    info:
+      path: Support/Info.plist
+      properties:
+        CFBundleName: Grove
+        CFBundleDisplayName: Grove
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSMinimumSystemVersion: "27.0"
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSPrincipalClass: NSApplication
+        NSHighResolutionCapable: true
+        # Grove holds unsaved commit drafts — it must get a chance to flush them.
+        NSSupportsSuddenTermination: false
+        NSSupportsAutomaticTermination: false
+        NSHumanReadableCopyright: ""
+
+  GroveTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Grove
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.emirhanengin.grove.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Grove:
+    build:
+      targets:
+        Grove: all
+        GroveTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - GroveTests

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "lineLength": 100,
+  "indentation": { "spaces": 4 },
+  "respectsExistingLineBreaks": true,
+  "lineBreakBeforeControlFlowKeywords": false,
+  "lineBreakBeforeEachArgument": false,
+  "indentConditionalCompilationBlocks": false,
+  "prioritizeKeepingFunctionOutputTogether": true,
+  "rules": {
+    "AlwaysUseLowerCamelCase": true,
+    "NeverForceUnwrap": false,
+    "OrderedImports": true,
+    "UseLetInEveryBoundCaseVariable": false,
+    "ReturnVoidInsteadOfEmptyTuple": true
+  }
+}

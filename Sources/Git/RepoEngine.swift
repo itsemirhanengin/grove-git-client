@@ -275,7 +275,11 @@ actor RepoEngine {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sha.isEmpty else { return nil }  // clean tree, nothing to save
 
-        let ref = "refs/grove/backup/\(Int(Date().timeIntervalSince1970))"
+        // The reason goes in the **ref name**. `update-ref -m` writes only to
+        // the reflog, and the object is a stash commit whose own subject says
+        // `WIP on main` — so neither is readable by the `for-each-ref` the
+        // recovery window uses.
+        let ref = BackupRef.name(epoch: Int(Date().timeIntervalSince1970), reason: reason)
         let anchored = try await limiter.withSlot {
             try await runner.write(
                 ["update-ref", ref, sha, "-m", "grove: before \(reason)"],
@@ -666,6 +670,139 @@ actor RepoEngine {
         case .revert: try await run(["revert", "--abort"])
         case .bisect: try await run(["bisect", "reset"])
         }
+    }
+
+    // MARK: - Stashes
+
+    func stashes() async throws -> [StashEntry] {
+        let arguments = ["stash", "list", "--format=format:\(StashEntry.format)"]
+        let result = try await limiter.withSlot {
+            try await runner.read(arguments, in: repository.root)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
+        return StashEntry.parse(result.stdout)
+    }
+
+    /// Stashes the working copy.
+    ///
+    /// - Parameter includeUntracked: untracked files are **not** stashed by
+    ///   default, and that surprises people — `git stash` leaves them behind and
+    ///   a later `git clean` eats them. Offered explicitly rather than assumed
+    ///   either way.
+    /// - Parameter keepIndex: leave what is staged staged, so a stash can be
+    ///   taken of only the unstaged half.
+    func createStash(message: String?, includeUntracked: Bool, keepIndex: Bool) async throws {
+        var built = ["stash", "push"]
+        if includeUntracked { built.append("--include-untracked") }
+        if keepIndex { built.append("--keep-index") }
+        if let message, !message.trimmingCharacters(in: .whitespaces).isEmpty {
+            built += ["-m", message]
+        }
+        try await run(built)
+    }
+
+    /// Restores a stash and **keeps** it in the list.
+    func applyStash(_ stash: StashEntry) async throws {
+        try await run(["stash", "apply", stash.selector])
+    }
+
+    /// Restores a stash and removes it.
+    ///
+    /// A pop that conflicts does **not** drop the stash — git keeps it, which is
+    /// the right behaviour and worth not undoing.
+    func popStash(_ stash: StashEntry) async throws {
+        try await run(["stash", "pop", stash.selector])
+    }
+
+    /// Throws a stash away.
+    ///
+    /// The commit survives in the object database until it is garbage
+    /// collected, so `git stash apply <oid>` can still recover it — which is
+    /// what the confirmation tells the user, because otherwise this looks final.
+    func dropStash(_ stash: StashEntry) async throws {
+        try await run(["stash", "drop", stash.selector])
+    }
+
+    /// What a stash touched.
+    ///
+    /// Diffed against the stash commit's **first parent**, which is the HEAD it
+    /// was taken from — the same pair `git stash show` uses. A stash commit also
+    /// has a second parent for the index and sometimes a third for untracked
+    /// files, and diffing against the wrong one shows a change nobody made.
+    func stashChanges(_ stash: StashEntry) async throws -> [FileChange] {
+        let arguments = [
+            "diff", "--name-status", "-z", "--find-renames", "--no-textconv",
+            "\(stash.oid)^1", stash.oid,
+        ]
+        let result = try await limiter.withSlot {
+            try await runner.read(arguments, in: repository.root, outputByteLimit: 64 << 20)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
+        return CommitChangeParser.parse(result.stdout)
+    }
+
+    func stashFileDiff(
+        for change: FileChange, in stash: StashEntry, contextLines: Int = 3
+    )
+        async throws -> String
+    {
+        let paths = [change.displayPath] + (change.originalDisplayPath.map { [$0] } ?? [])
+        let arguments =
+            [
+                "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames",
+                "--diff-algorithm=histogram", "-U\(contextLines)",
+                "\(stash.oid)^1", stash.oid, "--",
+            ] + paths
+
+        let result = try await limiter.withSlot {
+            try await runner.read(
+                arguments, in: repository.root, timeout: .seconds(60),
+                outputByteLimit: 256 << 20)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
+        return result.stdoutText
+    }
+
+    func stashDiff(_ stash: StashEntry, contextLines: Int = 3) async throws -> String {
+        let arguments = [
+            "stash", "show", "--patch", "--no-color", "--no-ext-diff",
+            "--find-renames", "-U\(contextLines)", stash.oid,
+        ]
+        let result = try await limiter.withSlot {
+            try await runner.read(
+                arguments, in: repository.root, timeout: .seconds(60),
+                outputByteLimit: 256 << 20)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
+        return result.stdoutText
+    }
+
+    // MARK: - Recovery
+
+    /// Every snapshot Grove has taken in this repository, newest first.
+    func backups() async throws -> [BackupRef] {
+        let arguments = [
+            "for-each-ref", "--sort=-refname",
+            "--format=%(refname)%00%(objectname)", String(BackupRef.prefix.dropLast()),
+        ]
+        let result = try await limiter.withSlot {
+            try await runner.read(arguments, in: repository.root)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
+        return BackupRef.parse(result.stdout)
+    }
+
+    /// Puts a snapshot back into the working copy.
+    ///
+    /// `stash apply`, not `stash pop`: the ref stays, so a recovery that goes
+    /// wrong can be tried again. Nothing in Grove deletes a backup except the
+    /// user, explicitly.
+    func restore(_ backup: BackupRef) async throws {
+        try await run(["stash", "apply", backup.oid])
+    }
+
+    func forgetBackup(_ backup: BackupRef) async throws {
+        try await run(["update-ref", "-d", backup.refName])
     }
 
     // MARK: - Staged summary

@@ -30,6 +30,7 @@ final class RepoViewModel: Identifiable {
     let repository: Repository
     private let engine: RepoEngine
     private let messageWriter: CommitMessageWriter?
+    private let log: OperationLog?
 
     var status: RepoStatus = .empty
     var branches: [BranchInfo] = []
@@ -62,11 +63,15 @@ final class RepoViewModel: Identifiable {
     var name: String { repository.name }
 
     init(
-        repository: Repository, engine: RepoEngine, messageWriter: CommitMessageWriter? = nil
+        repository: Repository,
+        engine: RepoEngine,
+        messageWriter: CommitMessageWriter? = nil,
+        log: OperationLog? = nil
     ) {
         self.repository = repository
         self.engine = engine
         self.messageWriter = messageWriter
+        self.log = log
     }
 
     // MARK: Derived display state
@@ -297,12 +302,19 @@ final class RepoViewModel: Identifiable {
             && !status.staged.isEmpty
     }
 
+    /// "Stage 3 files", or the name when there is only one — a log that says
+    /// "Stage 1 file(s)" is a log nobody reads.
+    nonisolated static func fileLabel(_ verb: String, _ changes: [FileChange]) -> String {
+        guard changes.count != 1 else { return "\(verb) \(changes[0].singleLineFileName)" }
+        return "\(verb) \(changes.count) files"
+    }
+
     func stage(_ changes: [FileChange]) {
-        perform { try await $0.stage(changes) }
+        perform(Self.fileLabel("Stage", changes)) { try await $0.stage(changes) }
     }
 
     func unstage(_ changes: [FileChange]) {
-        perform { try await $0.unstage(changes) }
+        perform(Self.fileLabel("Unstage", changes)) { try await $0.unstage(changes) }
     }
 
     func stageAll() {
@@ -324,18 +336,35 @@ final class RepoViewModel: Identifiable {
         guard let pending = pendingDiscard else { return }
         pendingDiscard = nil
 
+        let label =
+            pending.partial != nil
+            ? "Discard \(pending.lineCount) line(s) in \(pending.changes.first?.singleLineFileName ?? "a file")"
+            : Self.fileLabel("Discard", pending.changes)
+
         currentOperation = Task { [weak self] in
             guard let self else { return }
             self.isBusy = true
             defer { self.isBusy = false }
+
+            let record = self.log?.begin(label, in: self, destructive: true)
             do {
                 let outcome = try await self.runDiscard(pending)
                 self.lastDiscard = DiscardReceipt(outcome: outcome)
+                if let record {
+                    // The snapshot is the point: without the ref in the log,
+                    // "this can be undone" is a claim with no handle on it.
+                    self.log?.finish(
+                        record, outcome: .succeeded, backupRef: outcome.backupRef)
+                }
             } catch let error as GitError {
                 self.operationError = error
+                if let record {
+                    self.log?.finish(record, outcome: .failed(Self.message(for: error)))
+                }
             } catch {
                 self.operationError = .commandFailed(
                     command: "discard", exitCode: -1, stderr: "\(error)")
+                if let record { self.log?.finish(record, outcome: .failed("\(error)")) }
             }
             await self.performRefresh()
         }
@@ -385,7 +414,8 @@ final class RepoViewModel: Identifiable {
             return
         }
 
-        perform { engine in
+        let label = operation == .stage ? "Stage" : "Unstage"
+        perform("\(label) \(selection.count) line(s) in \(change.singleLineFileName)") { engine in
             try await engine.applyPartial(
                 diff: diff, selection: selection, operation: operation)
         }
@@ -393,7 +423,7 @@ final class RepoViewModel: Identifiable {
 
     func commit(amend: Bool = false) {
         let message = draftMessage
-        perform { engine in
+        perform(amend ? "Amend commit" : "Commit") { engine in
             try await engine.commit(message: message, amend: amend)
         } onSuccess: { [weak self] in
             // Only clear the draft once git has actually accepted it. Clearing
@@ -406,6 +436,8 @@ final class RepoViewModel: Identifiable {
     /// Runs a mutation, then refreshes. Errors land in `operationError` rather
     /// than an alert, so a failure in one repository never interrupts the others.
     private func perform(
+        _ label: String,
+        destructive: Bool = false,
         _ body: @escaping @Sendable (RepoEngine) async throws -> Void,
         onSuccess: (@MainActor () -> Void)? = nil
     ) {
@@ -413,14 +445,21 @@ final class RepoViewModel: Identifiable {
             guard let self else { return }
             self.isBusy = true
             defer { self.isBusy = false }
+
+            let record = self.log?.begin(label, in: self, destructive: destructive)
             do {
                 try await body(self.engine)
                 onSuccess?()
+                if let record { self.log?.finish(record, outcome: .succeeded) }
             } catch let error as GitError {
                 self.operationError = error
+                if let record {
+                    self.log?.finish(record, outcome: .failed(Self.message(for: error)))
+                }
             } catch {
                 self.operationError = .commandFailed(
-                    command: "operation", exitCode: -1, stderr: "\(error)")
+                    command: label, exitCode: -1, stderr: "\(error)")
+                if let record { self.log?.finish(record, outcome: .failed("\(error)")) }
             }
             await self.performRefresh()
         }
@@ -435,23 +474,25 @@ final class RepoViewModel: Identifiable {
     var canPull: Bool { !isBusy && status.behind > 0 }
 
     func fetch() {
-        perform { try await $0.fetch() }
+        perform("Fetch") { try await $0.fetch() }
     }
 
     /// Defaults to fast-forward only. When that is refused the error says so,
     /// and the UI offers merge or rebase as a separate, named choice — rather
     /// than quietly producing a merge commit nobody asked for.
     func pull(_ strategy: RepoEngine.PullStrategy = .fastForwardOnly) {
-        perform { try await $0.pull(strategy) }
+        perform(strategy.title, destructive: true) { try await $0.pull(strategy) }
     }
 
     func push() {
         let publish = needsUpstream
-        perform { try await $0.push(setUpstream: publish) }
+        perform(publish ? "Publish \(branchLabel)" : "Push \(branchLabel)") {
+            try await $0.push(setUpstream: publish)
+        }
     }
 
     func switchTo(_ branch: BranchInfo) {
-        perform { engine in
+        perform("Switch to \(branch.name)") { engine in
             try await engine.switchTo(branch)
         } onSuccess: { [weak self] in
             // The branch list's ahead/behind and current marker are all stale
@@ -463,7 +504,7 @@ final class RepoViewModel: Identifiable {
     func createBranch(named name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        perform { engine in
+        perform("Create branch \(trimmed)") { engine in
             try await engine.createBranch(named: trimmed)
         } onSuccess: { [weak self] in
             self?.branches = []
@@ -485,15 +526,22 @@ final class RepoViewModel: Identifiable {
             guard let self else { return }
             self.isBusy = true
             defer { self.isBusy = false }
+
+            let record = self.log?.begin("Merge \(branch.name)", in: self, destructive: true)
             do {
                 let outcome = try await self.engine.merge(branch)
                 self.lastMerge = MergeReceipt(branch: branch.name, outcome: outcome)
                 self.branches = []
+                if let record { self.log?.finish(record, outcome: .succeeded) }
             } catch let error as GitError {
                 self.operationError = error
+                if let record {
+                    self.log?.finish(record, outcome: .failed(Self.message(for: error)))
+                }
             } catch {
                 self.operationError = .commandFailed(
                     command: "merge", exitCode: -1, stderr: "\(error)")
+                if let record { self.log?.finish(record, outcome: .failed("\(error)")) }
             }
             await self.performRefresh()
         }
@@ -501,7 +549,9 @@ final class RepoViewModel: Identifiable {
 
     func abortInProgress() {
         guard let operation = status.inProgress else { return }
-        perform { try await $0.abort(operation) }
+        perform("Abort \(operation.label.lowercased())", destructive: true) {
+            try await $0.abort(operation)
+        }
     }
 
     /// Reloads the branch list, which `loadBranchesIfNeeded` will not do once it
@@ -565,6 +615,100 @@ final class RepoViewModel: Identifiable {
         case .emptyResponse: "The model returned nothing"
         case .providerFailed(let detail):
             detail.isEmpty ? "The model could not be reached" : detail
+        }
+    }
+
+    // MARK: Stashes
+
+    private(set) var stashes: [StashEntry] = []
+
+    /// The stash whose diff is showing.
+    var selectedStash: StashEntry?
+
+    /// A stash waiting to be confirmed away. Dropping is the one stash
+    /// operation that loses work, so it asks — see ``StashesPane``.
+    var pendingStashDrop: StashEntry?
+
+    func reloadStashes() async {
+        stashes = (try? await engine.stashes()) ?? []
+        if let selected = selectedStash, !stashes.contains(where: { $0.oid == selected.oid }) {
+            selectedStash = nil
+        }
+    }
+
+    var canStash: Bool { !isBusy && !status.changes.isEmpty }
+
+    func createStash(message: String?, includeUntracked: Bool, keepIndex: Bool) {
+        // Stashing takes work *off* the worktree, so it is destructive in the
+        // only sense that matters here: the files change under the user.
+        perform("Stash changes", destructive: true) {
+            try await $0.createStash(
+                message: message, includeUntracked: includeUntracked, keepIndex: keepIndex)
+        } onSuccess: { [weak self] in
+            self?.stashes = []
+        }
+    }
+
+    func applyStash(_ stash: StashEntry) {
+        perform("Apply stash") {
+            try await $0.applyStash(stash)
+        } onSuccess: { [weak self] in
+            self?.stashes = []
+        }
+    }
+
+    func popStash(_ stash: StashEntry) {
+        perform("Pop stash", destructive: true) {
+            try await $0.popStash(stash)
+        } onSuccess: { [weak self] in
+            self?.stashes = []
+        }
+    }
+
+    func confirmStashDrop() {
+        guard let stash = pendingStashDrop else { return }
+        pendingStashDrop = nil
+        perform("Drop stash", destructive: true) {
+            try await $0.dropStash(stash)
+        } onSuccess: { [weak self] in
+            self?.stashes = []
+            self?.selectedStash = nil
+        }
+    }
+
+    private(set) var selectedStashChanges: [FileChange] = []
+    var selectedStashChange: FileChange?
+
+    func loadStashChanges(_ stash: StashEntry) async {
+        selectedStashChanges = (try? await engine.stashChanges(stash)) ?? []
+        selectedStashChange = selectedStashChanges.first
+    }
+
+    func stashFileDiff(
+        for change: FileChange, in stash: StashEntry, contextLines: Int = 3
+    )
+        async throws -> String
+    {
+        try await engine.stashFileDiff(for: change, in: stash, contextLines: contextLines)
+    }
+
+    // MARK: Recovery
+
+    private(set) var backups: [BackupRef] = []
+
+    func reloadBackups() async {
+        backups = (try? await engine.backups()) ?? []
+    }
+
+    func restore(_ backup: BackupRef) {
+        perform("Restore snapshot from \(backup.reason)") { try await $0.restore(backup) }
+    }
+
+    func forget(_ backup: BackupRef) {
+        perform("Forget snapshot", destructive: true) {
+            try await $0.forgetBackup(backup)
+        } onSuccess: { [weak self] in
+            self?.backups = []
         }
     }
 
@@ -668,11 +812,15 @@ final class RepoViewModel: Identifiable {
     /// Writes back what the resolver produced. The page decides what the file
     /// should say; this is the only thing that puts it on disk.
     func applyResolution(_ contents: String, to change: FileChange) {
-        perform { try await $0.applyResolution(contents, to: change) }
+        perform("Resolve \(change.singleLineFileName)") {
+            try await $0.applyResolution(contents, to: change)
+        }
     }
 
     func resolve(_ change: FileChange, using side: RepoEngine.ConflictSide) {
-        perform { try await $0.resolve(change, using: side) }
+        perform("\(side.title) for \(change.singleLineFileName)", destructive: true) {
+            try await $0.resolve(change, using: side)
+        }
     }
 
     /// Marks a conflict settled without changing the file — the user edited it
@@ -682,7 +830,9 @@ final class RepoViewModel: Identifiable {
     }
 
     func continueMerge() {
-        perform { try await $0.continueMerge() }
+        perform("Continue \(status.inProgress?.label.lowercased() ?? "merge")") {
+            try await $0.continueMerge()
+        }
     }
 
     // MARK: Diff

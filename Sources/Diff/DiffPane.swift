@@ -1,6 +1,36 @@
 import DiffCore
 import SwiftUI
 
+/// Which version of a file a diff is of.
+///
+/// One pane for all three, because the difference between them is entirely in
+/// which two blobs git is asked about — everything above and below is the same
+/// header, the same renderer and the same scroll position.
+enum DiffOrigin: Equatable, Sendable {
+    case workingCopy
+    case commit(String)
+    case stash(StashEntry)
+
+    /// Part of the reload key, so switching between two commits reloads.
+    var key: String {
+        switch self {
+        case .workingCopy: ""
+        case .commit(let oid): "commit:\(oid)"
+        case .stash(let stash): "stash:\(stash.oid)"
+        }
+    }
+
+    /// What replaces the Staged / Unstaged switch, which only the working copy
+    /// has two sides to offer.
+    var sideLabel: String? {
+        switch self {
+        case .workingCopy: nil
+        case .commit: "In commit"
+        case .stash: "In stash"
+        }
+    }
+}
+
 /// The diff column.
 ///
 /// Laid out after Tower, top to bottom: a tight title row with the file name and
@@ -19,10 +49,10 @@ struct DiffPane: View {
     let repo: RepoViewModel
     let selection: SelectedChange
 
-    /// When set, the diff is a file inside that commit rather than the working
-    /// copy's. History is read-only here: there is no staged side to switch to
-    /// and nothing to stage, so both of those controls disappear.
-    var commitOID: String?
+    /// Where the diff comes from. Anything but the working copy is read-only:
+    /// there is no staged side to switch to and nothing to stage, so both of
+    /// those controls disappear.
+    var origin: DiffOrigin = .workingCopy
 
     @State private var patch = ""
     @State private var isLoading = false
@@ -67,7 +97,10 @@ struct DiffPane: View {
     }
 
     private var taskKey: String {
-        "\(repo.id.path)|\(commitOID ?? "")|\(change.displayPath)|\(selection.staged)|\(contextLines)"
+        [
+            repo.id.path, origin.key, change.displayPath,
+            "\(selection.staged)", "\(contextLines)",
+        ].joined(separator: "|")
     }
 
     // MARK: Header
@@ -106,8 +139,8 @@ struct DiffPane: View {
             // Both sides of a file that is staged *and* modified again are worth
             // looking at, so this is a switch rather than a label. A file that
             // exists on only one side gets a label instead of a dead control.
-            if commitOID != nil {
-                Text(change.indexStatus.letter.isEmpty ? "In commit" : "In commit")
+            if let label = origin.sideLabel {
+                Text(label)
                     .font(Typography.secondaryDetail)
                     .foregroundStyle(.secondary)
             } else if change.isStaged && change.isUnstaged {
@@ -261,7 +294,7 @@ struct DiffPane: View {
     /// git is on this side of the bridge.
     @ViewBuilder
     private var selectionBar: some View {
-        if !picked.isEmpty && commitOID == nil {
+        if !picked.isEmpty, origin == .workingCopy {
             VStack(spacing: 0) {
                 Divider()
                 HStack(spacing: Space.md) {
@@ -335,12 +368,16 @@ struct DiffPane: View {
         defer { isLoading = false }
 
         do {
-            if let commitOID {
-                patch = try await repo.commitDiff(
-                    for: change, in: commitOID, contextLines: contextLines)
-            } else {
+            switch origin {
+            case .workingCopy:
                 patch = try await repo.diff(
                     for: change, staged: selection.staged, contextLines: contextLines)
+            case .commit(let oid):
+                patch = try await repo.commitDiff(
+                    for: change, in: oid, contextLines: contextLines)
+            case .stash(let stash):
+                patch = try await repo.stashFileDiff(
+                    for: change, in: stash, contextLines: contextLines)
             }
             // A file with no hunks is a pure rename or a binary — nothing to
             // pick from, and the bar never appears.

@@ -10,7 +10,8 @@ import SwiftUI
 /// place to reveal its sections. Pinned above them is `Overview`, the
 /// all-repos-at-once view.
 struct RootView: View {
-    @State private var model = AppModel()
+    let model: AppModel
+
     @State private var selection: SidebarSelection? = .overview
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
@@ -335,6 +336,8 @@ private struct ListColumn: View {
                     WorkingCopyPane(repo: repo, workspace: workspace)
                 case .history:
                     HistoryPane(repo: repo)
+                case .stashes:
+                    StashesPane(repo: repo)
                 case .branches:
                     BranchesPane(repo: repo)
                 default:
@@ -480,13 +483,27 @@ private struct DetailColumn: View {
                 DiffPane(
                     repo: repo,
                     selection: SelectedChange(change: change, staged: true),
-                    commitOID: commit.oid
+                    origin: .commit(commit.oid)
                 )
             } else {
                 ContentUnavailableView(
                     "No Commit Selected",
                     systemImage: "clock",
                     description: Text("Select a commit, then a file within it.")
+                )
+            }
+        } else if let repo = focusedRepo, isShowingStashes {
+            if let stash = repo.selectedStash, let change = repo.selectedStashChange {
+                DiffPane(
+                    repo: repo,
+                    selection: SelectedChange(change: change, staged: true),
+                    origin: .stash(stash)
+                )
+            } else {
+                ContentUnavailableView(
+                    "No Stash Selected",
+                    systemImage: "tray",
+                    description: Text("Select a stash to see what it holds.")
                 )
             }
         } else if let repo = focusedRepo, let selected = repo.selectedChange {
@@ -512,6 +529,11 @@ private struct DetailColumn: View {
         return false
     }
 
+    private var isShowingStashes: Bool {
+        if case .repo(_, .stashes) = selection { return true }
+        return false
+    }
+
     /// Which repository's diff the column shows.
     ///
     /// In a repository section it is whatever the sidebar points at. In the
@@ -529,6 +551,6 @@ private struct DetailColumn: View {
 }
 
 #Preview {
-    RootView()
+    RootView(model: AppModel())
         .frame(width: 1280, height: 800)
 }

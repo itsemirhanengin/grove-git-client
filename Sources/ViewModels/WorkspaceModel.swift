@@ -76,6 +76,11 @@ final class WorkspaceModel: Identifiable {
     /// per repository would mean a dozen filesystem probes for one answer.
     private let messageWriter: CommitMessageWriter
 
+    /// Shared by every repository in the workspace, because the question it
+    /// answers — "what did Grove just do?" — is asked about the window, not
+    /// about one repository.
+    let operationLog = OperationLog()
+
     init(root: URL, runner: GitRunner, limiter: GitTaskLimiter) {
         self.root = root
         self.runner = runner
@@ -94,7 +99,8 @@ final class WorkspaceModel: Identifiable {
             let model = RepoViewModel(
                 repository: repository,
                 engine: RepoEngine(repository: repository, runner: runner, limiter: limiter),
-                messageWriter: messageWriter
+                messageWriter: messageWriter,
+                log: operationLog
             )
             // Restored here, while the view model is still being built, rather
             // than in a pass afterwards. A later pass would change the sidebar's

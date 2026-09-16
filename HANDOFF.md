@@ -3,7 +3,7 @@
 Native macOS 27 multi-repo git client, SwiftUI. Written for picking the work up
 in a fresh session.
 
-**State: phases 0–16 done. Phase 8 (diff viewer) was rebuilt from scratch on
+**State: every phase done — 0 through 18. Phase 8 (diff viewer) was rebuilt from scratch on
 2026-09-16 on a completely different footing — the diff body is a `WKWebView`,
 not AppKit. Read "The diff surface" before touching it, and "What went wrong"
 before deciding to make it native again. Phase 10 (hunk/line staging) landed the
@@ -80,7 +80,7 @@ Corrections worth keeping:
 | 15 | History + commit graph | ✅ |
 | 16 | AI commit messages (`claude -p`) | ✅ |
 | 17 | *(absorbed into 9)* | — |
-| 18 | Operation log, recovery window, stashes | ⬜ |
+| 18 | Operation log, recovery window, stashes | ✅ |
 
 **Design polish is deliberately deferred.** The owner will do a visual pass over
 everything once the features are in. Do not spend turns on aesthetics unasked.
@@ -183,7 +183,7 @@ renderer shipped blank twice. Worth a session. Likely leads: a test host with th
 WebKit entitlements, an XCTest UI-test target instead of a unit target, or
 driving the page in `safari`/`node` against the built `Web/DiffRenderer`.
 
-Counts as of this handoff: **40 DiffCore tests + 190 app tests**, 3 of the app
+Counts as of this handoff: **40 DiffCore tests + 201 app tests**, 3 of the app
 tests disabled as above. Recount after any change.
 
 ---
@@ -680,6 +680,65 @@ silently matches nothing and reports "0 tests" rather than an error.
 
 ---
 
+## Stashes, the log and recovery — phase 18
+
+### Stashes
+
+`StashesPane` fills the last empty sidebar section. Two things about git's
+stashes that the UI has to say out loud:
+
+- **Untracked files are not stashed** unless asked. `git stash` leaves them
+  behind, and a later `git clean` eats them — so the sheet offers the switch and
+  says so rather than picking for the user.
+- **`stash@{0}` is positional and renumbers.** Dropping one shifts everything
+  below it, so a selector is only valid against the list it came from; every
+  mutation reloads. Rows are identified by the stash **commit**, which does not
+  move.
+
+Dropping confirms, and the confirmation gives the `git stash apply <oid>` that
+still works until git collects the commit — "Drop" looks final and is not.
+
+A stash's contents are diffed against its **first parent**, the HEAD it was
+taken from, which is the pair `git stash show` uses. A stash commit also has a
+second parent for the index and sometimes a third for untracked files; diffing
+against the wrong one shows a change nobody made.
+
+### The operation log
+
+`OperationLog`, one per workspace, recorded from `RepoViewModel.perform(_:)` —
+which is why every call site now passes a label in the user's words. Entries are
+written when an operation **starts**, so one that hangs or crashes still leaves
+a trace, which is the one worth having. In memory only: the durable half is the
+backup refs, which are read straight from git.
+
+### The recovery window
+
+The safety net existed from phase 7 and was **unreachable**. Every destructive
+operation writes a `git stash create` snapshot to `refs/grove/backup/`, GC-proof
+and invisible to `git branch` and `git stash list` — invisibility that is right
+for the repository and useless for the user.
+
+`RecoveryWindow` (⇧⌘R) lists them per repository beside the session's log, shows
+the `git stash apply <ref>` for each **verbatim and selectable**, and offers
+Restore and Forget. Restore is `stash apply`, never `pop`: the ref stays, so a
+recovery that goes wrong can be tried again. Nothing deletes a backup except the
+user.
+
+It is a `Window` scene rather than a sheet, which is why `AppModel` moved up to
+`GroveApp` — a model owned by one window's state cannot be reached from another.
+The ⇧⌘R shortcut lives on the **scene**, which is also what puts Recovery in the
+Window menu; declaring it again on a command button would be two views claiming
+one shortcut.
+
+### `for-each-ref` does not expand `%x1f`
+
+Unlike `git log --format`, it prints it literally. The snapshot list parsed to
+nothing and looked exactly like "no snapshots were ever taken" — no error, no
+warning. `%00` **is** expanded (which is why `branches()` was fine all along),
+and a ref name can contain neither NUL nor newline, so that is what both use.
+
+---
+
 ## What is solid
 
 ### Git layer — `Sources/Git/`
@@ -858,16 +917,20 @@ Alternatives that were costed and not taken, so they need not be re-costed:
 
 ---
 
-## Remaining phases, in order
+## What is left
 
-**Phases 17–18** — the operation log and the recovery window. Phase 17 was
-absorbed into 9 long ago, so 18 is what is left. Branch deletion, rename and force-push were
-left out of phase 13 and have no home yet; a three-way (base / ours / theirs)
-view of a conflict was left out of phase 14, which resolves from the merged file
-with markers instead.
+Every numbered phase is done. What is *not* built, and has no home yet:
 
-Also outstanding: **Settings**, which is where context width and unified/split
-are meant to live, and where the disabled rendering tests should be revisited.
+- **Branch deletion, rename and force-push.** Left out of phase 13 deliberately;
+  force-push in particular needs its own deliberate action, not a flag.
+- **A three-way conflict view** (base / ours / theirs side by side). Phase 14
+  resolves from the merged file with markers instead, which is what git leaves
+  on disk.
+- **Settings**, which is where diff context width and unified/split are meant to
+  live — both are constants in `DiffPane` today — and where the disabled
+  rendering tests should be revisited.
+- **The design pass.** The owner has been keeping his own list of visual faults
+  through every phase and will do one sweep at the end. Do not pre-empt it.
 
 ---
 

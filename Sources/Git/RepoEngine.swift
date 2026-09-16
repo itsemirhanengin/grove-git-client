@@ -668,6 +668,40 @@ actor RepoEngine {
         }
     }
 
+    // MARK: - Staged summary
+
+    /// What is staged, for the commit-message writer: git's own `--stat`
+    /// summary and the diff itself.
+    ///
+    /// The summary is fetched separately rather than derived from the diff,
+    /// because it is the part that stays accurate when the diff has to be
+    /// truncated — it names every file even when only the first few are shown.
+    func stagedSummary() async throws -> (statistics: String, diff: String) {
+        let statArguments = ["diff", "--cached", "--stat", "--no-color"]
+        let diffArguments = [
+            "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv",
+            "--find-renames", "--diff-algorithm=histogram", "-U3",
+        ]
+
+        async let stat = limiter.withSlot {
+            try await runner.read(statArguments, in: repository.root)
+        }
+        async let patch = limiter.withSlot {
+            try await runner.read(
+                diffArguments, in: repository.root, timeout: .seconds(60),
+                outputByteLimit: 64 << 20)
+        }
+
+        let (statResult, patchResult) = try await (stat, patch)
+        guard statResult.didSucceed else {
+            throw GitError.classify(statResult, command: statArguments)
+        }
+        guard patchResult.didSucceed else {
+            throw GitError.classify(patchResult, command: diffArguments)
+        }
+        return (statResult.stdoutText, patchResult.stdoutText)
+    }
+
     // MARK: - History
 
     /// One page of history, newest first.

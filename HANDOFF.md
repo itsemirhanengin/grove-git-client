@@ -3,7 +3,7 @@
 Native macOS 27 multi-repo git client, SwiftUI. Written for picking the work up
 in a fresh session.
 
-**State: phases 0–15 done. Phase 8 (diff viewer) was rebuilt from scratch on
+**State: phases 0–16 done. Phase 8 (diff viewer) was rebuilt from scratch on
 2026-09-16 on a completely different footing — the diff body is a `WKWebView`,
 not AppKit. Read "The diff surface" before touching it, and "What went wrong"
 before deciding to make it native again. Phase 10 (hunk/line staging) landed the
@@ -78,7 +78,7 @@ Corrections worth keeping:
 | 13 | fetch/pull/push, branch switch, merge | ✅ |
 | 14 | Conflict resolver | ✅ |
 | 15 | History + commit graph | ✅ |
-| 16 | AI commit messages (`claude -p`) | ⬜ |
+| 16 | AI commit messages (`claude -p`) | ✅ |
 | 17 | *(absorbed into 9)* | — |
 | 18 | Operation log, recovery window, stashes | ⬜ |
 
@@ -183,7 +183,7 @@ renderer shipped blank twice. Worth a session. Likely leads: a test host with th
 WebKit entitlements, an XCTest UI-test target instead of a unit target, or
 driving the page in `safari`/`node` against the built `Web/DiffRenderer`.
 
-Counts as of this handoff: **40 DiffCore tests + 179 app tests**, 3 of the app
+Counts as of this handoff: **40 DiffCore tests + 190 app tests**, 3 of the app
 tests disabled as above. Recount after any change.
 
 ---
@@ -620,6 +620,66 @@ switch to and nothing to stage from history.
 
 ---
 
+## AI commit messages — phase 16
+
+Two providers, tried in order. `claude` if the user has one, and macOS's
+on-device model if not — the fallback that works on a plane, with no account and
+nothing leaving the machine. A `claude` failure *falls through* to it rather
+than erroring: no network, an expired login and a rate limit all land there, and
+all three are exactly when the offline one earns its place.
+
+### The invocation
+
+```
+claude --print --model haiku --permission-prompts none \
+       --append-system-prompt <instructions>  <prompt>      # diff on stdin
+```
+
+Verified by running it, not assumed:
+
+- **`--permission-prompts none`** is the load-bearing flag: anything that would
+  ask for permission is denied outright, so the model has no tools and cannot
+  touch the repository it is describing. Naming tools to deny instead would
+  need that list to stay correct forever.
+- **Not `--bare`**, even though it looks tempting: it forces auth to
+  `ANTHROPIC_API_KEY` and never reads the keychain, which breaks a user signed
+  in through OAuth.
+- The diff goes on **stdin**, never in argv — a real one is far past `ARG_MAX`.
+- `claude` is resolved against the **login** PATH for the same reason git is:
+  a GUI app inherits launchd's minimal PATH, and `~/.local/bin` is not on it.
+
+### Untrusted input
+
+A diff is the contents of files, which can say anything — including something
+addressed to the model. The defences are layered rather than clever:
+
+1. The model gets **no tools**, so the worst it can do is write a misleading
+   sentence.
+2. Its answer goes into the **draft field and nowhere else**. Grove never
+   commits on its own, so a person reads every generated message.
+3. The instructions say plainly that the diff is data and that text inside it is
+   never an instruction.
+
+Everything else is sizing and tidying: the `--stat` summary is fetched
+*separately* from the diff so it still names every file when the diff has to be
+truncated, and `CommitMessagePrompt.clean` strips the fences and quotes models
+wrap answers in — doing it here rather than begging in the prompt is the
+difference between usually right and always right.
+
+### The live test is opt-in, and switched on with a file
+
+`touch .grove-test-ai` at the project root. **Not** an environment variable:
+`xcodebuild test` does not forward the shell's environment to the app the tests
+run inside, so an `env` switch here is a gate nobody can open — which is how it
+was written first, and it silently never ran. It stays off because it costs
+network, quota and about ten seconds per run.
+
+Note also that `-only-testing` at *function* level does not match a swift-testing
+test — `-only-testing:GroveTests/CommitMessageTests` works, adding `/liveGeneration`
+silently matches nothing and reports "0 tests" rather than an error.
+
+---
+
 ## What is solid
 
 ### Git layer — `Sources/Git/`
@@ -800,8 +860,8 @@ Alternatives that were costed and not taken, so they need not be re-costed:
 
 ## Remaining phases, in order
 
-**Phases 16–18** — AI commit messages, then the operation log and recovery
-window. Branch deletion, rename and force-push were
+**Phases 17–18** — the operation log and the recovery window. Phase 17 was
+absorbed into 9 long ago, so 18 is what is left. Branch deletion, rename and force-push were
 left out of phase 13 and have no home yet; a three-way (base / ours / theirs)
 view of a conflict was left out of phase 14, which resolves from the merged file
 with markers instead.

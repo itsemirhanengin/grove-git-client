@@ -22,3 +22,6 @@ node_modules/
 Web/DiffRenderer/
 
 .DS_Store
+
+# Switches on the opt-in live AI test. See CommitMessageTests.
+.grove-test-ai

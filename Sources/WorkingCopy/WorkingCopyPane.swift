@@ -45,6 +45,10 @@ private struct CommitComposer: View {
             .padding(Space.md)
             .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: Radius.md))
 
+            if let generated = repo.lastGeneratedMessage {
+                provenance(generated)
+            }
+
             HStack(spacing: Space.md) {
                 Button("Stage All") { repo.stageAll() }
                     .disabled(repo.status.unstaged.isEmpty && repo.status.untracked.isEmpty)
@@ -53,9 +57,22 @@ private struct CommitComposer: View {
                 Button("Unstage All") { repo.unstageAll() }
                     .disabled(repo.status.staged.isEmpty)
 
+                // Writes into the draft and stops there. Grove never commits on
+                // its own, so every generated message is read by a person first.
+                Button {
+                    repo.generateCommitMessage()
+                } label: {
+                    Label("Write Message", systemImage: "sparkles")
+                        .labelStyle(.iconOnly)
+                        .symbolEffect(.pulse, isActive: repo.isGeneratingMessage)
+                }
+                .disabled(!repo.canGenerateMessage)
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .help(generateHelp)
+
                 Spacer()
 
-                if repo.isBusy {
+                if repo.isBusy || repo.isGeneratingMessage {
                     ProgressView().controlSize(.small)
                 }
 
@@ -71,6 +88,37 @@ private struct CommitComposer: View {
             }
         }
         .padding(Space.lg)
+    }
+
+    /// Says where a generated message came from, and admits when the model was
+    /// only shown part of the diff.
+    private func provenance(_ generated: GeneratedCommitMessage) -> some View {
+        HStack(spacing: Space.xs) {
+            Image(systemName: "sparkles")
+            Text(
+                generated.wasTruncated
+                    ? "Written by \(generated.source.title) from part of the diff"
+                    : "Written by \(generated.source.title)"
+            )
+            Spacer(minLength: 0)
+            Button("Clear") {
+                repo.draftMessage = ""
+                repo.lastGeneratedMessage = nil
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.tint)
+        }
+        .font(Typography.secondaryDetail)
+        .foregroundStyle(.secondary)
+    }
+
+    private var generateHelp: String {
+        if repo.status.staged.isEmpty { return "Stage something first" }
+        if !repo.canGenerateMessage {
+            return OnDeviceWriter.unavailableReason
+                ?? "No `claude` command was found, and the on-device model is unavailable"
+        }
+        return "Write a commit message from the staged diff (⇧⌘G)"
     }
 
     private var commitHelp: String {

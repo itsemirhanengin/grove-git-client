@@ -72,10 +72,15 @@ final class WorkspaceModel: Identifiable {
         repos.count { if case .failed = $0.loadState { true } else { false } }
     }
 
+    /// Built once and shared: resolving `claude` walks the PATH, and doing it
+    /// per repository would mean a dozen filesystem probes for one answer.
+    private let messageWriter: CommitMessageWriter
+
     init(root: URL, runner: GitRunner, limiter: GitTaskLimiter) {
         self.root = root
         self.runner = runner
         self.limiter = limiter
+        self.messageWriter = CommitMessageWriter(environment: runner.environment)
     }
 
     // MARK: Discovery
@@ -88,7 +93,8 @@ final class WorkspaceModel: Identifiable {
         repos = found.map { repository in
             let model = RepoViewModel(
                 repository: repository,
-                engine: RepoEngine(repository: repository, runner: runner, limiter: limiter)
+                engine: RepoEngine(repository: repository, runner: runner, limiter: limiter),
+                messageWriter: messageWriter
             )
             // Restored here, while the view model is still being built, rather
             // than in a pass afterwards. A later pass would change the sidebar's

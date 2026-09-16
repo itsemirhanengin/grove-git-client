@@ -29,6 +29,7 @@ final class RepoViewModel: Identifiable {
 
     let repository: Repository
     private let engine: RepoEngine
+    private let messageWriter: CommitMessageWriter?
 
     var status: RepoStatus = .empty
     var branches: [BranchInfo] = []
@@ -60,9 +61,12 @@ final class RepoViewModel: Identifiable {
     var id: RepoID { repository.id }
     var name: String { repository.name }
 
-    init(repository: Repository, engine: RepoEngine) {
+    init(
+        repository: Repository, engine: RepoEngine, messageWriter: CommitMessageWriter? = nil
+    ) {
         self.repository = repository
         self.engine = engine
+        self.messageWriter = messageWriter
     }
 
     // MARK: Derived display state
@@ -504,6 +508,64 @@ final class RepoViewModel: Identifiable {
     /// has one.
     func reloadBranches() async {
         branches = (try? await engine.branches()) ?? []
+    }
+
+    // MARK: Commit messages
+
+    private(set) var isGeneratingMessage = false
+
+    /// The last generated message, so the composer can say where it came from
+    /// and whether the diff had to be cut short.
+    var lastGeneratedMessage: GeneratedCommitMessage?
+
+    /// Whether there is anything to generate *with*.
+    var canGenerateMessage: Bool {
+        !isBusy && !isGeneratingMessage && !status.staged.isEmpty
+            && (messageWriter?.hasProvider ?? false)
+    }
+
+    /// Writes a commit message from what is staged, into the draft field.
+    ///
+    /// Into the **draft**, never into a commit: a person reads every generated
+    /// message before it becomes one, which is also what makes feeding an
+    /// untrusted diff to a model acceptable. See ``CommitMessagePrompt``.
+    func generateCommitMessage() {
+        guard let messageWriter, !isGeneratingMessage else { return }
+
+        currentOperation = Task { [weak self] in
+            guard let self else { return }
+            self.isGeneratingMessage = true
+            defer { self.isGeneratingMessage = false }
+
+            do {
+                let summary = try await self.engine.stagedSummary()
+                let generated = try await messageWriter.write(
+                    statistics: summary.statistics, diff: summary.diff)
+                self.draftMessage = generated.text
+                self.lastGeneratedMessage = generated
+            } catch let error as CommitMessageError {
+                self.operationError = .commandFailed(
+                    command: "generate message", exitCode: -1,
+                    stderr: Self.message(for: error))
+            } catch let error as GitError {
+                self.operationError = error
+            } catch {
+                self.operationError = .commandFailed(
+                    command: "generate message", exitCode: -1, stderr: "\(error)")
+            }
+        }
+    }
+
+    nonisolated static func message(for error: CommitMessageError) -> String {
+        switch error {
+        case .nothingStaged: "Stage something first"
+        case .noProvider:
+            OnDeviceWriter.unavailableReason
+                ?? "No `claude` command was found, and the on-device model is unavailable"
+        case .emptyResponse: "The model returned nothing"
+        case .providerFailed(let detail):
+            detail.isEmpty ? "The model could not be reached" : detail
+        }
     }
 
     // MARK: History

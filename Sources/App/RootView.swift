@@ -307,18 +307,34 @@ private struct WorkspaceOverview: View {
                 // groups: a conflicted path is neither staged nor simply
                 // modified, so filtering by those two states makes the one file
                 // that actually blocks the user disappear from the list.
-                group("Conflicts", repo.status.conflicted, staged: false)
-                group("Staged", repo.status.staged, staged: true)
-                group("Changes", repo.status.unstaged + repo.status.untracked, staged: false)
+                group(
+                    "Conflicts", repo.displayedConflicted,
+                    total: repo.status.conflicted.count, staged: false)
+                group(
+                    "Staged", repo.displayedStaged,
+                    total: repo.status.staged.count, staged: true)
+                group(
+                    "Changes", repo.displayedUnstaged,
+                    total: repo.status.unstaged.count + repo.status.untracked.count,
+                    staged: false)
+
+                if repo.hasMoreThanDisplayed {
+                    OverflowRow(hidden: repo.hiddenRowCount)
+                }
             }
         }
         .padding(.horizontal, Space.lg)
     }
 
+    /// `total` is the real number of changes, which is not the number of rows
+    /// rendered once the display cap kicks in. Showing the rendered count would
+    /// quietly under-report how much work is uncommitted.
     @ViewBuilder
-    private func group(_ title: String, _ changes: [FileChange], staged: Bool) -> some View {
+    private func group(
+        _ title: String, _ changes: [FileChange], total: Int, staged: Bool
+    ) -> some View {
         if !changes.isEmpty {
-            GroupLabelRow(title: title, count: changes.count)
+            GroupLabelRow(title: title, count: total, shown: changes.count)
             ForEach(changes) { change in
                 ChangeRow(change: change, staged: staged)
             }

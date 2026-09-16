@@ -159,4 +159,41 @@ struct WorkspaceFilterTests {
             #expect(!scope.symbol.isEmpty)
         }
     }
+
+    // MARK: Display cap
+
+    @Test("a repository under the cap renders everything")
+    func underCap() async {
+        let workspace = await makeWorkspace([("small", 10, false, 0, false)])
+        let repo = workspace.repos[0]
+
+        #expect(repo.displayedUnstaged.count == 10)
+        #expect(!repo.hasMoreThanDisplayed)
+        #expect(repo.hiddenRowCount == 0)
+    }
+
+    /// The badge must keep reporting the truth even when the list does not —
+    /// under-reporting uncommitted work is worse than truncating the list.
+    @Test("a repository over the cap truncates rows but not the count")
+    func overCap() async {
+        let total = RepoViewModel.displayRowCap + 742
+        let workspace = await makeWorkspace([("huge", total, false, 0, false)])
+        let repo = workspace.repos[0]
+
+        #expect(repo.dirtyCount == total)
+        #expect(repo.displayedUnstaged.count == RepoViewModel.displayRowCap)
+        #expect(repo.hasMoreThanDisplayed)
+        #expect(repo.hiddenRowCount == 742)
+    }
+
+    @Test("the cap applies per group, not across the repository")
+    func capIsPerGroup() async {
+        let workspace = await makeWorkspace([("mixed", 5, true, 0, false)])
+        let repo = workspace.repos[0]
+
+        // Well under the cap in every group, so nothing is hidden.
+        #expect(repo.displayedConflicted.count == 1)
+        #expect(repo.displayedUnstaged.count == 5)
+        #expect(!repo.hasMoreThanDisplayed)
+    }
 }

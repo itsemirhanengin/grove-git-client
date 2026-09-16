@@ -69,6 +69,39 @@ final class RepoViewModel: Identifiable {
 
     var dirtyCount: Int { status.dirtyCount }
 
+    // MARK: Display caps
+
+    /// Most rows one repository may contribute to a list.
+    ///
+    /// An accidental `node_modules` commit, or a branch switch that rewrites a
+    /// generated directory, can leave tens of thousands of changed files. Laying
+    /// all of them out would freeze the window for something nobody wants to
+    /// read. The full count stays visible in the badge, and an overflow row
+    /// offers the rest explicitly.
+    static let displayRowCap = 300
+
+    var displayedConflicted: [FileChange] { Array(status.conflicted.prefix(Self.displayRowCap)) }
+    var displayedStaged: [FileChange] { Array(status.staged.prefix(Self.displayRowCap)) }
+
+    var displayedUnstaged: [FileChange] {
+        Array((status.unstaged + status.untracked).prefix(Self.displayRowCap))
+    }
+
+    /// Whether any group was truncated for display.
+    var hasMoreThanDisplayed: Bool {
+        status.conflicted.count > Self.displayRowCap
+            || status.staged.count > Self.displayRowCap
+            || (status.unstaged.count + status.untracked.count) > Self.displayRowCap
+    }
+
+    /// How many rows the cap is holding back, across all groups.
+    var hiddenRowCount: Int {
+        let unstagedTotal = status.unstaged.count + status.untracked.count
+        return max(0, status.conflicted.count - Self.displayRowCap)
+            + max(0, status.staged.count - Self.displayRowCap)
+            + max(0, unstagedTotal - Self.displayRowCap)
+    }
+
     var errorMessage: String? {
         guard case .failed(let error) = loadState else { return nil }
         switch error {

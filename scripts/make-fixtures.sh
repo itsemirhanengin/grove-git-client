@@ -250,7 +250,7 @@ check "delta: unborn HEAD"           "# branch.oid (initial)"          "$delta_s
 
 echo
 if [[ $fail -eq 0 ]]; then
-    echo "All fixtures verified. ($(du -sh "$FIXTURES" | cut -f1))"
+    echo "All fixtures verified. ($(du -sh "$FIXTURES" 2>/dev/null | cut -f1))"
 else
     echo "Fixture verification FAILED."
 fi

@@ -186,7 +186,8 @@ private nonisolated final class Coordinator: @unchecked Sendable {
             lock.withLock { $0.didLaunch = true }
         } catch {
             self.continuation = nil
-            continuation.resume(throwing: ProcessRunnerError.launchFailed(error.localizedDescription))
+            continuation.resume(
+                throwing: ProcessRunnerError.launchFailed(error.localizedDescription))
             return
         }
 
@@ -205,7 +206,6 @@ private nonisolated final class Coordinator: @unchecked Sendable {
     /// deadlock.
     private func drain(_ pipe: Pipe, isStdout: Bool) {
         let handle = pipe.fileHandleForReading
-        let label = isStdout ? "stdout" : "stderr"
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             while true {
@@ -245,7 +245,6 @@ private nonisolated final class Coordinator: @unchecked Sendable {
             self.lock.withLock { state in
                 if isStdout { state.stdoutDone = true } else { state.stderrDone = true }
             }
-            _ = label
             self.finishIfReady()
         }
     }
@@ -268,7 +267,8 @@ private nonisolated final class Coordinator: @unchecked Sendable {
     // MARK: Termination
 
     private func scheduleTimeout() {
-        let seconds = Double(invocation.timeout.components.seconds)
+        let seconds =
+            Double(invocation.timeout.components.seconds)
             + Double(invocation.timeout.components.attoseconds) / 1e18
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + seconds) { [weak self] in
             self?.kill(because: .timedOut)
@@ -278,7 +278,9 @@ private nonisolated final class Coordinator: @unchecked Sendable {
     /// SIGTERM now, SIGKILL shortly after if it is still alive.
     func kill(because reason: ProcessTermination) {
         let shouldSignal: Bool = lock.withLock { state in
-            guard state.didLaunch, !state.didTerminate, state.killReason == nil else { return false }
+            guard state.didLaunch, !state.didTerminate, state.killReason == nil else {
+                return false
+            }
             state.killReason = reason
             return true
         }

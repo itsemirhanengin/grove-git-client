@@ -75,7 +75,9 @@ public struct DiffLine: Sendable, Equatable {
 
     @inlinable public var kind: DiffLineKind {
         get { DiffLineKind(rawValue: packed >> Self.kindShift) ?? .context }
-        set { packed = (packed & ~(0b111 << Self.kindShift)) | (newValue.rawValue << Self.kindShift) }
+        set {
+            packed = (packed & ~(0b111 << Self.kindShift)) | (newValue.rawValue << Self.kindShift)
+        }
     }
 
     /// The original line ended `\r\n`. The `\r` is excluded from ``length`` but is

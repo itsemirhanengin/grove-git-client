@@ -29,26 +29,66 @@ struct RootView: View {
                 )
         } detail: {
             DetailColumn()
+                // Fill the column, or `safeAreaBar` attaches to the intrinsic
+                // height of the empty state and the bar floats mid-pane.
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .safeAreaBar(edge: .bottom) {
+                    GlobalActionBar(
+                        workspace: model.workspace,
+                        isRefreshing: model.isRefreshing,
+                        onRefresh: { Task { await model.refreshAll() } }
+                    )
+                }
         }
         .navigationTitle(model.workspace?.name ?? "Grove")
         .navigationSubtitle(subtitle)
         .toolbarTitleDisplayMode(.inline)
         .windowResizeAnchor(.topLeading)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            // `sharedBackgroundVisibility(.hidden)` plus a fixed `ToolbarSpacer`
+            // is what produces macOS 26's look of *separated* glass capsules
+            // rather than one continuous bar. The groups are split by meaning:
+            // what you are looking at, then what you can do to it.
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button("Open Workspace…", systemImage: "folder") {
                     Task { await model.chooseWorkspace() }
                 }
+                .help("Choose a folder of repositories (⌘O)")
+                .keyboardShortcut("o", modifiers: .command)
             }
-            ToolbarItem(placement: .primaryAction) {
+            .sharedBackgroundVisibility(.hidden)
+
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button("Refresh", systemImage: "arrow.clockwise") {
                     Task { await model.refreshAll() }
                 }
                 .keyboardShortcut("r", modifiers: .command)
                 .disabled(model.workspace == nil)
             }
+
+            if let workspace = model.workspace {
+                ToolbarItem(placement: .accessoryBar(id: "scope")) {
+                    RepoScopeBar(workspace: workspace)
+                }
+            }
         }
+        .searchable(
+            text: filterBinding,
+            placement: .sidebar,
+            prompt: "Filter repositories"
+        )
         .task { await model.bootstrap() }
+    }
+
+    /// Bound to the workspace when there is one, and inert otherwise, so the
+    /// search field can exist before a workspace is open.
+    private var filterBinding: Binding<String> {
+        Binding(
+            get: { model.workspace?.filterText ?? "" },
+            set: { model.workspace?.filterText = $0 }
+        )
     }
 
     private var subtitle: String {
@@ -93,7 +133,7 @@ private struct SidebarColumn: View {
                     // binding during a list update triggers AppKit's reentrant
                     // NSTableView delegate warning — which is documented to
                     // become an assert.
-                    ForEach(workspace.repos) { repo in
+                    ForEach(workspace.visibleRepos) { repo in
                         Section(isExpanded: expansion(for: repo, in: workspace)) {
                             ForEach(RepoSection.allCases) { section in
                                 Label(section.title, systemImage: section.symbol)
@@ -107,22 +147,17 @@ private struct SidebarColumn: View {
             }
         }
         .listStyle(.sidebar)
-    }
-
-    /// The repository the sidebar currently has selected, if any.
-    private var selectedRepo: RepoID? {
-        if case .repo(let id, _) = selection { return id }
-        return nil
+        // `.hard` on a dense list keeps the row grid legible where it meets the
+        // chrome; `.soft` is for continuous content like code.
+        .scrollEdgeEffectStyle(.hard, for: .top)
+        .scrollEdgeEffectStyle(.soft, for: .bottom)
     }
 
     private func expansion(
         for repo: RepoViewModel, in workspace: WorkspaceModel
-    )
-        -> Binding<Bool>
-    {
-        let selected = selectedRepo
-        return Binding(
-            get: { workspace.isExpanded(repo, selectedRepo: selected) },
+    ) -> Binding<Bool> {
+        Binding(
+            get: { workspace.isExpanded(repo) },
             set: { repo.expansionOverride = $0 }
         )
     }
@@ -240,7 +275,7 @@ private struct WorkspaceOverview: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                ForEach(workspace.repos) { repo in
+                ForEach(workspace.visibleRepos) { repo in
                     Section {
                         content(for: repo)
                     } header: {
@@ -251,6 +286,7 @@ private struct WorkspaceOverview: View {
             .padding(.bottom, Space.xl)
         }
         .scrollEdgeEffectStyle(.hard, for: .top)
+        .scrollEdgeEffectStyle(.soft, for: .bottom)
     }
 
     @ViewBuilder

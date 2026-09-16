@@ -19,6 +19,31 @@ final class WorkspaceModel: Identifiable {
     var repos: [RepoViewModel] = []
     var discoveryState: DiscoveryState = .idle
 
+    /// Scope and filter from the accessory bar.
+    var scope: RepoScope = .all
+    var filterText: String = ""
+
+    /// Repositories after the scope and filter are applied.
+    ///
+    /// A repository that failed to load always stays visible: hiding it would
+    /// silently shrink the workspace and leave no way to retry.
+    var visibleRepos: [RepoViewModel] {
+        let query = filterText.trimmingCharacters(in: .whitespaces).lowercased()
+        return repos.filter { repo in
+            if case .failed = repo.loadState { return true }
+            guard scope.matches(repo.status) else { return false }
+            guard !query.isEmpty else { return true }
+            return repo.name.lowercased().contains(query)
+        }
+    }
+
+    var isFiltering: Bool {
+        scope != .all || !filterText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// How many repositories the current scope and filter are hiding.
+    var hiddenRepoCount: Int { repos.count - visibleRepos.count }
+
     var id: String { root.path() }
     var name: String { root.lastPathComponent }
 
@@ -72,16 +97,18 @@ final class WorkspaceModel: Identifiable {
 
     /// Whether a repository's section should currently be open.
     ///
-    /// Driven by **selection**, never by repository data. An earlier version
+    /// The default is a **constant**, never repository data. An earlier version
     /// expanded whichever repositories had changes, which meant the sidebar's
     /// row count changed as each async status refresh landed — mid-update, which
-    /// trips AppKit's reentrant NSTableView delegate check. Selection only
-    /// changes when the user acts, so it can never collide with a refresh.
+    /// trips AppKit's reentrant NSTableView delegate check. A constant cannot
+    /// collide with a refresh.
     ///
-    /// It is also the better behaviour: what a section contains is a fixed list
-    /// of four navigation items, so how dirty the repository is says nothing
-    /// about whether it is worth opening.
-    func isExpanded(_ repo: RepoViewModel, selectedRepo: RepoID?) -> Bool {
-        repo.expansionOverride ?? (repo.id == selectedRepo)
+    /// It defaults to open rather than closed because a closed section has no
+    /// affordance to open it here: section headers are not selectable, so
+    /// starting collapsed would leave no way to reach Working Copy or History at
+    /// all. What a section contains is a fixed list of four navigation items, so
+    /// showing them costs little.
+    func isExpanded(_ repo: RepoViewModel) -> Bool {
+        repo.expansionOverride ?? true
     }
 }

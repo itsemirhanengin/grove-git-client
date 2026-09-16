@@ -17,6 +17,10 @@ final class AppModel {
     var isBootstrapping = true
     var bootstrapError: String?
 
+    /// Drives the spinning arrow in the bottom bar. A symbol effect rather than
+    /// a `ProgressView`, because ten spinners in a sidebar is just noise.
+    var isRefreshing = false
+
     private var services: AppServices?
 
     /// Resolves the git environment, then opens a workspace.
@@ -63,6 +67,8 @@ final class AppModel {
     }
 
     func refreshAll() async {
+        isRefreshing = true
+        defer { isRefreshing = false }
         await workspace?.refreshAll()
     }
 

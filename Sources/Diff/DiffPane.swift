@@ -1,3 +1,4 @@
+import DiffCore
 import SwiftUI
 
 /// The diff column.
@@ -23,6 +24,16 @@ struct DiffPane: View {
     @State private var loadError: String?
     @State private var generation = 0
 
+    /// The patch, parsed once per load rather than on every body evaluation —
+    /// a 50k-line diff is not something to walk while laying out a toolbar.
+    @State private var parsed: PatchFile?
+
+    /// What the user has picked in the diff, already matched against `parsed`.
+    @State private var picked = ResolvedDiffSelection()
+
+    /// Bumped to ask the page to drop its highlight once a pick is consumed.
+    @State private var clearToken = 0
+
     /// How much unchanged code surrounds each change, and whether the diff is
     /// stacked or side by side.
     ///
@@ -42,6 +53,11 @@ struct DiffPane: View {
             // `spacing: 0`, or the bar floats a gap below the toolbar and the
             // file name sits noticeably lower than the list beside it.
             .safeAreaBar(edge: .top, spacing: 0) { headerBar }
+            // The one bar Grove puts under a diff, and it is only there while
+            // rows are picked. A permanent footer was rejected — context width
+            // and unified/split belong in Settings — but an action on a live
+            // selection has nowhere else to be.
+            .safeAreaBar(edge: .bottom, spacing: 0) { selectionBar }
             .task(id: taskKey) { await load() }
     }
 
@@ -200,7 +216,18 @@ struct DiffPane: View {
                 .controlSize(.small)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            DiffWebView(payload: payload, onError: { loadError = $0 })
+            DiffWebView(
+                payload: payload,
+                onError: { loadError = $0 },
+                onSelection: { range in
+                    guard let parsed, let range else {
+                        picked = ResolvedDiffSelection()
+                        return
+                    }
+                    picked = range.resolve(in: parsed)
+                },
+                clearSelectionToken: clearToken
+            )
         }
     }
 
@@ -216,20 +243,99 @@ struct DiffPane: View {
         )
     }
 
+    // MARK: - Staging a selection
+
+    /// Appears only while rows are picked.
+    ///
+    /// Everything here is real AppKit: the page reports what was selected and
+    /// stops there, because turning a selection into a patch is git's job and
+    /// git is on this side of the bridge.
+    @ViewBuilder
+    private var selectionBar: some View {
+        if !picked.isEmpty {
+            VStack(spacing: 0) {
+                Divider()
+                HStack(spacing: Space.md) {
+                    Text(countLabel)
+                        .font(Typography.secondaryDetail.monospacedDigit())
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: Space.md)
+
+                    if canDiscard {
+                        Button("Discard", role: .destructive) {
+                            apply(picked.lines, .discard)
+                        }
+                    }
+
+                    Button(chunkTitle) { apply(picked.chunks, primaryOperation) }
+                        .disabled(repo.isBusy)
+
+                    Button(lineTitle) { apply(picked.lines, primaryOperation) }
+                        .buttonStyle(.glassProminent)
+                        .disabled(repo.isBusy)
+                }
+                .padding(.horizontal, Space.lg)
+                .frame(height: Metrics.bar)
+            }
+            .background(.bar)
+        }
+    }
+
+    /// Which way the picked lines move. The staged side can only send work
+    /// back; the unstaged side can only send it forward.
+    private var primaryOperation: RepoEngine.PartialOperation {
+        selection.staged ? .unstage : .stage
+    }
+
+    private var countLabel: String {
+        let lines = picked.lineCount == 1 ? "1 line" : "\(picked.lineCount) lines"
+        return picked.chunkCount > 1
+            ? "\(lines) across \(picked.chunkCount) chunks"
+            : lines
+    }
+
+    private var lineTitle: String {
+        selection.staged ? "Unstage Lines" : "Stage Lines"
+    }
+
+    private var chunkTitle: String {
+        let noun = picked.chunkCount > 1 ? "Chunks" : "Chunk"
+        return selection.staged ? "Unstage \(noun)" : "Stage \(noun)"
+    }
+
+    /// Untracked files are never patched in place — git has no record of them,
+    /// so a backup ref cannot bring one back and the whole file goes to the
+    /// Trash instead. That rule does not bend for a line.
+    private var canDiscard: Bool {
+        !selection.staged && change.kind != .untracked
+    }
+
+    private func apply(_ lines: PatchSelection, _ operation: RepoEngine.PartialOperation) {
+        repo.applyPartial(to: change, diff: patch, selection: lines, operation: operation)
+        picked = ResolvedDiffSelection()
+        clearToken += 1
+    }
+
     // MARK: Loading
 
     private func load() async {
         isLoading = true
         loadError = nil
+        picked = ResolvedDiffSelection()
         defer { isLoading = false }
 
         do {
             patch = try await repo.diff(
                 for: change, staged: selection.staged, contextLines: contextLines)
+            // A file with no hunks is a pure rename or a binary — nothing to
+            // pick from, and the bar never appears.
+            parsed = UnifiedPatchParser.parse(patch).first { !$0.hunks.isEmpty }
             generation += 1
         } catch {
             loadError = "\(error)"
             patch = ""
+            parsed = nil
         }
     }
 }

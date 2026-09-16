@@ -22,6 +22,10 @@ final class DiffWebSurface: NSObject {
 
     var onError: ((String) -> Void)?
 
+    /// Fires when the user finishes picking rows in the diff, and again with
+    /// `nil` when they clear the pick.
+    var onSelection: ((DiffRowRange?) -> Void)?
+
     override init() {
         let configuration = WKWebViewConfiguration()
         if let root = DiffSchemeHandler.bundledRoot() {
@@ -83,6 +87,14 @@ final class DiffWebSurface: NSObject {
         }
     }
 
+    /// Drops the highlight after the picked rows have been staged or discarded.
+    func clearSelection() {
+        guard isReady else { return }
+        webView.callAsyncJavaScript(
+            "window.grove.clearSelection()", arguments: [:], in: nil, in: .page
+        ) { _ in }
+    }
+
     private func evaluate(_ payload: DiffPayload) {
         guard let json = payload.jsonString else {
             onError?("Could not encode the diff payload.")
@@ -115,6 +127,9 @@ final class DiffWebSurface: NSObject {
                 pendingPayload = nil
                 evaluate(payload)
             }
+        case "selection":
+            let range = (message["range"] as? [String: Any]).flatMap(DiffRowRange.init(json:))
+            onSelection?(range)
         case "error":
             onError?(message["message"] as? String ?? "The diff renderer failed.")
         default:
@@ -174,13 +189,20 @@ struct DiffPayload: Encodable, Equatable {
 struct DiffWebView: NSViewRepresentable {
     let payload: DiffPayload
     let onError: (String) -> Void
+    var onSelection: (DiffRowRange?) -> Void = { _ in }
+    /// Bumped by the owner to ask the page to drop its highlight. A counter
+    /// rather than a flag, because two clears in a row are two events and a
+    /// `Bool` would coalesce them into one.
+    var clearSelectionToken: Int = 0
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> WKWebView {
         let surface = DiffWebSurface()
         surface.onError = onError
+        surface.onSelection = onSelection
         context.coordinator.surface = surface
+        context.coordinator.clearedAt = clearSelectionToken
         context.coordinator.sent = payload
         surface.send(payload)
         return surface.webView
@@ -189,6 +211,13 @@ struct DiffWebView: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         guard let surface = context.coordinator.surface else { return }
         surface.onError = onError
+        surface.onSelection = onSelection
+
+        if context.coordinator.clearedAt != clearSelectionToken {
+            context.coordinator.clearedAt = clearSelectionToken
+            surface.clearSelection()
+        }
+
         guard context.coordinator.sent != payload else { return }
 
         // A theme flip alone does not need the document rebuilt, and rebuilding
@@ -213,5 +242,6 @@ struct DiffWebView: NSViewRepresentable {
     final class Coordinator {
         var surface: DiffWebSurface?
         var sent: DiffPayload?
+        var clearedAt = 0
     }
 }

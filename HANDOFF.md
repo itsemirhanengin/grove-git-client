@@ -3,10 +3,11 @@
 Native macOS 27 multi-repo git client, SwiftUI. Written for picking the work up
 in a fresh session.
 
-**State: phases 0–7 done. Phase 8 (diff viewer) works and is on screen, but it
-was rebuilt from scratch on 2026-09-16 on a completely different footing — the
-diff body is now a `WKWebView`, not AppKit. Read "The diff surface" before
-touching it, and "What went wrong" before deciding to make it native again.**
+**State: phases 0–10 done. Phase 8 (diff viewer) was rebuilt from scratch on
+2026-09-16 on a completely different footing — the diff body is a `WKWebView`,
+not AppKit. Read "The diff surface" before touching it, and "What went wrong"
+before deciding to make it native again. Phase 10 (hunk/line staging) landed the
+same day; read "Partial staging" before changing anything about patches.**
 
 ---
 
@@ -71,7 +72,7 @@ Corrections worth keeping:
 | 7 | Working Copy — stage/unstage/discard/commit, backup refs | ✅ |
 | 8 | Diff viewer — web renderer, native header, file selection | ✅ |
 | 9 | Side-by-side, word diff, syntax highlighting | ✅ — comes from the renderer |
-| 10 | Hunk/line staging (`PatchBuilder`) | ⬜ **needs a Swift parser again** |
+| 10 | Hunk/line staging (`PatchBuilder`) | ✅ — parser is back, see below |
 | 11 | FSEvents live refresh | ⬜ |
 | 12 | Persistence + workspace switcher (the glass morph) | ⬜ |
 | 13 | fetch/pull/push, branch switch, merge | ⬜ |
@@ -182,39 +183,127 @@ renderer shipped blank twice. Worth a session. Likely leads: a test host with th
 WebKit entitlements, an XCTest UI-test target instead of a unit target, or
 driving the page in `safari`/`node` against the built `Web/DiffRenderer`.
 
-Counts as of this handoff: **6 DiffCore tests + 106 app tests**, 3 of the app
+Counts as of this handoff: **30 DiffCore tests + 129 app tests**, 3 of the app
 tests disabled as above. Recount after any change.
 
 ---
 
-## `Packages/DiffCore` — mostly gone, on purpose
+## Partial staging — phase 10
 
-Only `DiffLine.swift` (a 16-byte POD) and its 6 tests survive. The
-`UnifiedDiffParser`, `DiffModel` and `RowLayout` were deleted with the native
-renderer and **are not recoverable** — they were never committed (`git log
---all`, stash and `git fsck` all come up empty).
+`Packages/DiffCore` holds `DiffLine.swift` (a 16-byte POD), plus the parser and
+the patch synthesiser phase 10 needed:
 
-That is fine for now: `RepoEngine.diff(for:staged:contextLines:)` returns git's
-own `diff --git` output as a `String`, and the renderer parses it.
+```
+UnifiedPatch.swift   PatchLine / PatchHunk / PatchFile + UnifiedPatchParser
+PatchBuilder.swift   PatchSelection, PatchApplication, PatchBuilder
+```
 
-**Phase 10 needs a parser again** — turning a *subset* of lines into a patch
-`git apply` accepts is real work that cannot live in the web layer, because the
-patch has to go back to git. Write it then, scoped to that job, rather than
-rebuilding the general-purpose one.
+The old `UnifiedDiffParser`, `DiffModel` and `RowLayout` were deleted with the
+native renderer and are not recoverable — they were never committed. What came
+back is scoped to one job: turning a *subset* of a diff into a patch `git apply`
+accepts. `RepoEngine.diff(for:staged:contextLines:)` still hands the renderer
+git's own output verbatim; nothing re-derives it.
 
-What the old parser got right, worth reproducing:
+### Five things that are load-bearing
 
-- Consume hunk bodies by **counting** from the `@@` header, never by sniffing
-  line prefixes. A diff of a diff contains context lines starting with
-  `diff --git` and `@@`; prefix-sniffing parsers lose sync there. `git apply`
-  counts, so counting is what makes synthesised patches apply.
-- A 100 %-similar rename emits **no `---`/`+++` lines at all** — the paths come
-  from `rename from` / `rename to`.
-- Verify against **real `git diff` output**, not hand-written fixtures.
-  Hand-written ones had wrong hunk counts three times and each looked like a
-  parser bug.
+1. **Hunk bodies are consumed by counting from the `@@` header**, never by
+   sniffing line prefixes. A diff of a diff contains context lines that begin
+   `diff --git` and `@@`; a prefix-sniffing parser loses sync there for the rest
+   of the file. `git apply` counts, so counting is what makes patches apply.
+2. **Lines are split on the newline *byte*.** In Swift `"\r\n"` is a single
+   extended grapheme cluster, so `split(separator: "\n")` finds **no separator
+   at all** inside a CRLF file — the whole diff comes back as one line and every
+   hunk after the first is silently lost. `UnifiedPatchParser.splitLines` walks
+   `String.UTF8View`. The same trap bites tests: `contains("+BETA\r")` never
+   matches CRLF text; write `"+BETA\r\n"`.
+3. **The forward and reverse transforms are mirror images**, and which one to
+   use is decided by *which side has to match the file*, not by the operation's
+   name:
 
----
+   ```text
+   FORWARD  (git apply)     ' ' → ' '   '+' in S → '+'   '+' not in S → DROP
+                                        '-' in S → '-'   '-' not in S → ' '
+
+   REVERSE  (git apply -R)  ' ' → ' '   '-' in S → '-'   '-' not in S → DROP
+                                        '+' in S → '+'   '+' not in S → ' '
+   ```
+
+   | operation | diff source | application | target |
+   |---|---|---|---|
+   | stage | `git diff` | forward | `--cached` |
+   | unstage | `git diff --cached` | reverse | `--cached -R` |
+   | discard | `git diff` | **reverse** | worktree, `-R` |
+
+   Discard is a *reverse* application of the same diff staging applies forwards.
+   An earlier draft of this document said discard "uses the same body with -R";
+   that is only true when the whole chunk is selected, where the two transforms
+   coincide. For a partial selection it is wrong, and the failure mode is a
+   silently wrong working tree.
+4. **Only one side's hunk header survives verbatim** — the side git has to match.
+   The produced side's start is re-derived from the hunks actually emitted, with
+   a running offset, so dropping an earlier chunk un-shifts the ones after it. A
+   zero-length side's start is the line *before* the change (`@@ -0,0 +1 @@`),
+   which needs its own ±1.
+5. **A line owning `\ No newline at end of file` is non-splittable.** Turning it
+   into context asserts both sides end without a newline there, which is exactly
+   what the marker says is untrue. `PatchBuilder` throws
+   `.noNewlineNotSplittable` rather than synthesise it. Dropping such a line is
+   fine; only *demoting* one is refused. A partial selection may also not
+   contradict a whole-file create or delete (`.wholeFileOnly`).
+
+### Applying
+
+`RepoEngine.applyPartial(diff:selection:operation:)` runs **`git apply --check`
+before every apply**, always. A subtly wrong patch does not fail cleanly — git
+applies the hunks it can and rejects the rest, leaving an index that looks fine
+and commits something nobody wrote. A discard takes a backup ref first, like
+every other destructive operation.
+
+The `diff` passed in is **the exact text the user was looking at**, never a
+freshly fetched one. A selection is line numbers, and line numbers mean
+something only against the diff they were made in. Note that a working-tree edit
+does *not* invalidate a staging selection — `git apply --cached` reads the patch
+and the index — but it does invalidate a discard, which is what `--check`
+catches.
+
+### The UI
+
+The page reports selections and does nothing else with them:
+`enableLineSelection: true` plus `onLineSelected`, over the existing `grove`
+message handler. `DiffRowRange.resolve(in:)` matches the reported
+`(line number, side)` anchors against `PatchHunk.lines`, which is already in
+render order because it *is* the unified diff's order.
+
+Everything the user presses is real AppKit: a `safeAreaBar(edge: .bottom)` in
+`DiffPane` that exists only while rows are picked, offering Stage/Unstage Lines,
+Stage/Unstage Chunk, and Discard.
+
+The page's one visible control is `enableGutterUtility` — the small button that
+appears in the **line-number column** on hover. It exists purely for
+discoverability: nothing else on screen said line staging was possible until you
+had already tried dragging. The library draws and styles it, and it is **not**
+deprecated. Two things about it:
+
+- `enableGutterUtility` alone is inert. The drag it starts is gated on
+  `onGutterUtilityClick` being present, so Grove passes an empty one.
+- That callback is empty on purpose. The range it produces is *also* committed
+  through `onLineSelected` on the same pointer-up, so reporting from both would
+  hand Swift the same selection twice.
+
+**Per-hunk buttons injected into the page were not built.** `@pierre/diffs` only
+exposes row injection through `lineAnnotations` (which render *below* a line,
+not at the hunk header) or through the `hunkSeparators` *function*, which the
+library marks deprecated. Neither was worth a deprecated dependency for a
+control the native bar already provides — but if the owner wants GitHub-style
+per-chunk buttons, `hunkSeparators` is where they go.
+
+Untracked files offer no line discard: git has no record of them, so a backup
+ref cannot help and the whole file goes to the Trash instead.
+
+`RepoOperationAlerts` moved the discard confirmation, the receipt and the
+failure alert out of `WorkingCopyPane` and onto the window root. A discard can
+now be asked for from two panes, and those two are not both mounted for every
+sidebar section — the sheet was waiting on a view that did not exist.
 
 ## What is solid
 
@@ -248,7 +337,12 @@ What the old parser got right, worth reproducing:
 - Untracked files go to the **Trash**, never `git clean` — git has no record of
   them so a backup ref cannot help.
 - Discard always confirms, and the sheet names the files and says where they go.
-- Staged rows offer no discard; unstage is the reversible step.
+  A **line-level** discard confirms too, with the line count and the same
+  snapshot promise — there is no threshold below which destroying uncommitted
+  work stops needing to be asked about.
+- Staged rows offer no discard; unstage is the reversible step. The diff's
+  selection bar follows the same rule: Discard appears on the unstaged side only.
+- Every synthesised patch goes through `git apply --check` before it is applied.
 - No `--no-verify` anywhere. Hooks are never bypassed.
 - **Unstage sends both paths of a rename.** Sending only the new path leaves the
   original staged as a deletion, which the next commit would carry out. Staging
@@ -381,30 +475,6 @@ Alternatives that were costed and not taken, so they need not be re-costed:
 ---
 
 ## Remaining phases, in order
-
-**Phase 10** — `PatchBuilder`, and the Swift-side parser it needs. The transform
-for a subset of lines is the subtle part, and the forward and reverse cases are
-**mirror images**:
-
-```
-FORWARD (stage from `git diff`; discard uses the same body with -R):
-  ' ' → ' '     '+' in S → '+'     '+' not in S → DROP
-                '-' in S → '-'     '-' not in S → ' '
-
-REVERSE (unstage, from `git diff --cached`, applied with -R):
-  ' ' → ' '     '-' in S → '-'     '-' not in S → DROP    ← mirrored
-                '+' in S → '+'     '+' not in S → ' '     ← mirrored
-```
-
-Getting the mirroring backwards yields "patch does not apply" — or worse, a
-silently wrong index. Always `git apply --check` first. Copy the file header
-**verbatim** from the original diff. Treat a line owning a `\ No newline at end
-of file` marker as non-splittable.
-
-The UI for it: `@pierre/diffs` supports line selection and can inject rows into
-hunk headers, so Stage/Discard Chunk buttons belong in the page, reported back
-over the `grove` message handler. `diffAcceptRejectHunk` in its API is worth
-reading first.
 
 **Phase 11** — FSEvents. One stream whose `pathsToWatch` is the repo roots.
 Filter *in the callback*: inside `.git/` allow only `HEAD`, `index` (not

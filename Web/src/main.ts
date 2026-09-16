@@ -1,6 +1,6 @@
 import './grove.css'
 import { FileDiff, processFile } from '@pierre/diffs'
-import type { FileDiffMetadata } from '@pierre/diffs'
+import type { FileDiffMetadata, SelectedLineRange } from '@pierre/diffs'
 
 /// What Swift sends when the selected file, the staged side, or the context
 /// width changes. `generation` is the cache key: `@pierre/diffs` memoises
@@ -18,6 +18,7 @@ interface RenderPayload {
 interface GroveBridge {
   render(payload: string): void
   setThemeType(themeType: 'light' | 'dark', canvas: string): void
+  clearSelection(): void
 }
 
 declare global {
@@ -121,6 +122,24 @@ function render(raw: string): void {
       light: 'github-light-default',
       dark: 'github-dark-default',
     },
+    // Line staging starts here and ends here: the page reports which rows were
+    // picked and does nothing else with them. Turning a selection into a patch
+    // is git's business, and git lives on the Swift side of the bridge.
+    enableLineSelection: true,
+    onLineSelected: (range: SelectedLineRange | null) => {
+      send({ type: 'selection', range })
+    },
+    // The hover affordance in the line-number column. Its whole job is to say,
+    // without a legend anywhere, that rows here can be picked at all — nothing
+    // else on screen advertises line staging until you have already tried it.
+    // The library draws and styles the button; Grove only turns it on.
+    enableGutterUtility: true,
+    // Deliberately empty, and required. `enableGutterUtility` on its own is
+    // inert: the drag the button starts is gated on this callback existing. The
+    // range it produces is committed through `onLineSelected` on the same
+    // pointer-up, so reporting it from here would send Swift the same selection
+    // twice.
+    onGutterUtilityClick: () => {},
   }
 
   if (!component) {
@@ -136,6 +155,11 @@ function render(raw: string): void {
   // no grid, no colours and no alignment at all.
   component.render({ fileDiff: metadata, containerWrapper: container! })
 
+  // A selection means line numbers in *this* diff. Carrying one across a file
+  // change would hand Swift a range that points into a document nobody is
+  // looking at any more.
+  component.setSelectedLines(null, { notify: false })
+
   send({ type: 'rendered', lines: metadata.hunks?.length ?? 0 })
 }
 
@@ -148,7 +172,13 @@ function setThemeType(themeType: 'light' | 'dark', canvas: string): void {
   component?.setThemeType(themeType)
 }
 
-window.grove = { render, setThemeType }
+/// Called after a staging operation, so the rows that were just consumed stop
+/// looking selected. `notify: false` keeps it from echoing straight back.
+function clearSelection(): void {
+  component?.setSelectedLines(null, { notify: false })
+}
+
+window.grove = { render, setThemeType, clearSelection }
 
 // Swift holds its first payload until this lands: `loadFileURL` is asynchronous
 // and evaluating into the page before the module has run does nothing.

@@ -12,6 +12,13 @@ struct RootView: View {
     @State private var selection: SidebarSelection? = .overview
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
+    /// The repository the window is pointed at, whichever of its sections is
+    /// showing.
+    private var focusedRepo: RepoViewModel? {
+        guard case .repo(let id, _) = selection else { return nil }
+        return model.workspace?.repos.first { $0.id == id }
+    }
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarColumn(model: model, selection: $selection)
@@ -52,6 +59,10 @@ struct RootView: View {
                     )
                 }
         }
+        // Once, at the root: a discard can be asked for from the file list or
+        // from the diff, and those two panes are not both on screen for every
+        // sidebar section.
+        .repoOperationAlerts(for: focusedRepo)
         .navigationTitle(model.workspace?.name ?? "Grove")
         .navigationSubtitle(subtitle)
         .toolbarTitleDisplayMode(.inline)

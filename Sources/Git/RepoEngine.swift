@@ -1,3 +1,4 @@
+import DiffCore
 import Foundation
 
 nonisolated enum GitError: Error, Sendable, Equatable {
@@ -9,6 +10,12 @@ nonisolated enum GitError: Error, Sendable, Equatable {
     case nothingToCommit
     case timedOut
     case cancelled
+    /// `git apply` rejected a synthesised patch. Almost always means the file
+    /// changed under the diff the selection was made in.
+    case patchDoesNotApply(String)
+    /// The selection could not be turned into a patch at all — see
+    /// ``PatchBuildError`` for which of the handful of reasons.
+    case cannotSplitPatch(PatchBuildError)
     case commandFailed(command: String, exitCode: Int32, stderr: String)
 
     /// Classifies a failed invocation from its stderr.
@@ -36,6 +43,9 @@ nonisolated enum GitError: Error, Sendable, Equatable {
         }
         if stderr.contains("Could not resolve host") || stderr.contains("unable to access") {
             return .networkUnreachable(stderr)
+        }
+        if stderr.contains("patch does not apply") || stderr.contains("patch failed") {
+            return .patchDoesNotApply(stderr)
         }
 
         return .commandFailed(
@@ -383,5 +393,95 @@ actor RepoEngine {
             throw GitError.classify(result, command: arguments)
         }
         return String(decoding: result.stdout, as: UTF8.self)
+    }
+
+    // MARK: - Partial staging
+
+    /// Which way a line-level operation moves work — and therefore how its
+    /// patch has to be built *and* applied.
+    ///
+    /// These differ by more than a flag. See ``PatchApplication`` for why
+    /// discard is a **reverse** application of the very same diff that staging
+    /// applies forwards: `git apply -R` matches a patch's new side against the
+    /// file, and for a discard that file is the worktree, which is the new side.
+    enum PartialOperation: String, Sendable, Equatable {
+        /// Worktree → index. Built from `git diff`, applied `--cached`.
+        case stage
+        /// Index → HEAD. Built from `git diff --cached`, applied `--cached -R`.
+        case unstage
+        /// Worktree → index. Built from `git diff`, applied `-R` to the working
+        /// tree. The only one of the three that can lose work.
+        case discard
+
+        /// Which side of the patch has to reproduce what is being patched.
+        var application: PatchApplication { self == .stage ? .forward : .reverse }
+
+        /// Whether the patch lands in the index rather than the working tree.
+        var isCached: Bool { self != .discard }
+
+        /// Whether it is built from `git diff --cached` rather than `git diff`.
+        var usesStagedDiff: Bool { self == .unstage }
+
+        var isDestructive: Bool { self == .discard }
+    }
+
+    /// Applies part of a diff — one chunk, or a hand-picked set of lines.
+    ///
+    /// `diff` is **the exact text the user was looking at**, never a freshly
+    /// fetched one. A selection is line numbers, and line numbers mean something
+    /// only against the diff they were made in; re-reading it here would apply
+    /// the selection to a file that has moved on, silently and wrongly. When the
+    /// file really has moved on, `git apply --check` says so and this throws.
+    ///
+    /// Returns the backup ref a discard left behind, `nil` for the other two.
+    @discardableResult
+    func applyPartial(
+        diff: String,
+        selection: PatchSelection,
+        operation: PartialOperation
+    ) async throws -> String? {
+        let files = UnifiedPatchParser.parse(diff)
+        guard let file = files.first(where: { !$0.hunks.isEmpty }) else {
+            throw GitError.cannotSplitPatch(.nothingSelected)
+        }
+
+        let patch: String
+        do {
+            patch = try PatchBuilder.build(
+                file: file, selection: selection, application: operation.application)
+        } catch let error as PatchBuildError {
+            throw GitError.cannotSplitPatch(error)
+        }
+
+        var backupRef: String?
+        if operation.isDestructive {
+            backupRef = try? await createBackup(reason: "discard lines")
+        }
+
+        // `--check` first, every time. A patch that is subtly wrong does not
+        // fail cleanly — git applies the hunks it can and rejects the rest,
+        // leaving an index that looks fine and commits something nobody wrote.
+        try await runApply(patch, operation: operation, check: true)
+        try await runApply(patch, operation: operation, check: false)
+
+        return backupRef
+    }
+
+    private func runApply(
+        _ patch: String, operation: PartialOperation, check: Bool
+    ) async throws {
+        var built = ["apply", "--whitespace=nowarn"]
+        if check { built.append("--check") }
+        if operation.isCached { built.append("--cached") }
+        if operation.application == .reverse { built.append("-R") }
+        built.append("-")
+        let arguments = built
+
+        let result = try await limiter.withSlot {
+            try await runner.write(arguments, in: repository.root, stdin: Array(patch.utf8))
+        }
+        guard result.didSucceed else {
+            throw GitError.classify(result, command: arguments)
+        }
     }
 }

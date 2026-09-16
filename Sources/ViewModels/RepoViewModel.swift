@@ -1,3 +1,4 @@
+import DiffCore
 import Foundation
 import Observation
 
@@ -111,6 +112,13 @@ final class RepoViewModel: Identifiable {
 
     var errorMessage: String? {
         guard case .failed(let error) = loadState else { return nil }
+        return Self.message(for: error)
+    }
+
+    /// One place that turns a `GitError` into something a person can act on,
+    /// used by both the per-repository failure state and the alert a failed
+    /// mutation raises.
+    nonisolated static func message(for error: GitError) -> String {
         switch error {
         case .notARepository: return "Not a git repository"
         case .authenticationRequired: return "Authentication required"
@@ -120,6 +128,17 @@ final class RepoViewModel: Identifiable {
         case .nothingToCommit: return "Nothing staged to commit"
         case .timedOut: return "git timed out"
         case .cancelled: return "Cancelled"
+        case .patchDoesNotApply:
+            return "The file changed since this diff — reload it and try again"
+        case .cannotSplitPatch(let reason):
+            switch reason {
+            case .nothingSelected: return "Nothing selected"
+            case .binaryFile: return "A binary file has no lines to stage"
+            case .combinedDiff: return "Resolve the conflict before staging lines"
+            case .noNewlineNotSplittable:
+                return "This chunk ends without a newline — take all of it at once"
+            case .wholeFileOnly: return "This file is added or removed as a whole"
+            }
         case .commandFailed(_, _, let stderr):
             return stderr.split(separator: "\n").first.map(String.init) ?? "git failed"
         }
@@ -197,8 +216,22 @@ final class RepoViewModel: Identifiable {
         let id = UUID()
         let changes: [FileChange]
 
+        /// Set when only part of one file goes, rather than all of it — a
+        /// chunk or a hand-picked set of lines from the diff on screen.
+        var partial: Partial?
+
+        /// The diff the selection was made in travels with it. A selection is
+        /// line numbers, and line numbers mean something only against the diff
+        /// they came from.
+        struct Partial {
+            var diff: String
+            var selection: PatchSelection
+        }
+
         var trackedCount: Int { changes.count { $0.kind != .untracked } }
         var untrackedCount: Int { changes.count { $0.kind == .untracked } }
+
+        var lineCount: Int { partial?.selection.count ?? 0 }
     }
 
     /// The result of the last discard, so the UI can say where the work went
@@ -255,7 +288,7 @@ final class RepoViewModel: Identifiable {
             self.isBusy = true
             defer { self.isBusy = false }
             do {
-                let outcome = try await self.engine.discard(pending.changes)
+                let outcome = try await self.runDiscard(pending)
                 self.lastDiscard = DiscardReceipt(outcome: outcome)
             } catch let error as GitError {
                 self.operationError = error
@@ -267,8 +300,54 @@ final class RepoViewModel: Identifiable {
         }
     }
 
+    /// The two shapes a discard comes in, behind one confirmation and one
+    /// receipt — the user should not have to learn that "discard lines" is a
+    /// different mechanism from "discard file".
+    private func runDiscard(_ pending: PendingDiscard) async throws -> RepoEngine.DiscardOutcome {
+        guard let partial = pending.partial else {
+            return try await engine.discard(pending.changes)
+        }
+
+        let backup = try await engine.applyPartial(
+            diff: partial.diff, selection: partial.selection, operation: .discard)
+
+        return RepoEngine.DiscardOutcome(
+            backupRef: backup,
+            restoredPaths: pending.changes.map(\.displayPath)
+        )
+    }
+
     func cancelPendingDiscard() {
         pendingDiscard = nil
+    }
+
+    // MARK: Partial staging
+
+    /// Stages, unstages or discards part of one file — a chunk, or picked lines.
+    ///
+    /// A discard goes through the same confirmation sheet as a whole-file one.
+    /// There is no threshold below which destroying uncommitted work stops
+    /// needing to be asked about.
+    func applyPartial(
+        to change: FileChange,
+        diff: String,
+        selection: PatchSelection,
+        operation: RepoEngine.PartialOperation
+    ) {
+        guard !selection.isEmpty else { return }
+
+        guard !operation.isDestructive else {
+            pendingDiscard = PendingDiscard(
+                changes: [change],
+                partial: .init(diff: diff, selection: selection)
+            )
+            return
+        }
+
+        perform { engine in
+            try await engine.applyPartial(
+                diff: diff, selection: selection, operation: operation)
+        }
     }
 
     func commit(amend: Bool = false) {

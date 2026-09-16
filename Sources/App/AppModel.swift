@@ -23,6 +23,9 @@ final class AppModel {
 
     private var services: AppServices?
 
+    /// Live refresh. One stream for the whole workspace — see ``RepoWatcher``.
+    private var watcher: RepoWatcher?
+
     /// Resolves the git environment, then opens a workspace.
     ///
     /// Environment resolution asks a login shell for `PATH`, which costs a
@@ -44,6 +47,11 @@ final class AppModel {
     func open(_ url: URL) async {
         guard let services else { return }
 
+        // Stop before discovery, not after: the old workspace's repositories are
+        // about to stop existing as far as this window is concerned, and a
+        // refresh fired at one of them mid-swap has nothing to update.
+        watcher?.stop()
+
         let model = WorkspaceModel(
             root: url,
             runner: services.runner,
@@ -52,6 +60,33 @@ final class AppModel {
         workspace = model
 
         await model.discover()
+        startWatching()
+    }
+
+    /// Points the watcher at whatever discovery found.
+    ///
+    /// A repository refreshes itself when Grove changes it, so this exists for
+    /// everything Grove did *not* do: a commit from the terminal, a branch
+    /// switch in another tool, a build touching generated files.
+    private func startWatching() {
+        guard let workspace else { return }
+
+        if watcher == nil {
+            watcher = RepoWatcher { [weak self] changed in
+                self?.repositoriesChangedOnDisk(changed)
+            }
+        }
+        watcher?.watch(workspace.repos.map(\.repository))
+    }
+
+    private func repositoriesChangedOnDisk(_ changed: Set<RepoID>) {
+        guard let workspace else { return }
+        for repo in workspace.repos where changed.contains(repo.id) {
+            // `refresh()` and not `refreshAndWait()`: these arrive unbidden and
+            // must never hold anything up. It also cancels a refresh already in
+            // flight, so a burst of events cannot pile up processes.
+            repo.refresh()
+        }
     }
 
     func chooseWorkspace() async {

@@ -3,7 +3,7 @@
 Native macOS 27 multi-repo git client, SwiftUI. Written for picking the work up
 in a fresh session.
 
-**State: phases 0–10 done. Phase 8 (diff viewer) was rebuilt from scratch on
+**State: phases 0–11 done. Phase 8 (diff viewer) was rebuilt from scratch on
 2026-09-16 on a completely different footing — the diff body is a `WKWebView`,
 not AppKit. Read "The diff surface" before touching it, and "What went wrong"
 before deciding to make it native again. Phase 10 (hunk/line staging) landed the
@@ -73,7 +73,7 @@ Corrections worth keeping:
 | 8 | Diff viewer — web renderer, native header, file selection | ✅ |
 | 9 | Side-by-side, word diff, syntax highlighting | ✅ — comes from the renderer |
 | 10 | Hunk/line staging (`PatchBuilder`) | ✅ — parser is back, see below |
-| 11 | FSEvents live refresh | ⬜ |
+| 11 | FSEvents live refresh | ✅ — see "Live refresh" |
 | 12 | Persistence + workspace switcher (the glass morph) | ⬜ |
 | 13 | fetch/pull/push, branch switch, merge | ⬜ |
 | 14 | Conflict resolver | ⬜ |
@@ -183,7 +183,7 @@ renderer shipped blank twice. Worth a session. Likely leads: a test host with th
 WebKit entitlements, an XCTest UI-test target instead of a unit target, or
 driving the page in `safari`/`node` against the built `Web/DiffRenderer`.
 
-Counts as of this handoff: **30 DiffCore tests + 129 app tests**, 3 of the app
+Counts as of this handoff: **30 DiffCore tests + 139 app tests**, 3 of the app
 tests disabled as above. Recount after any change.
 
 ---
@@ -305,6 +305,63 @@ failure alert out of `WorkingCopyPane` and onto the window root. A discard can
 now be asked for from two panes, and those two are not both mounted for every
 sidebar section — the sheet was waiting on a view that did not exist.
 
+## Live refresh — phase 11
+
+`Sources/Git/RepoWatcher.swift`. **One** FSEvents stream over the whole
+workspace, not one per repository: FSEvents folds overlapping paths together,
+and ten streams would mean ten wake-ups for one `git checkout`. `AppModel` starts
+it after discovery and hands each changed repository a `refresh()`.
+
+### The trap that cost the afternoon
+
+`URL.resolvingSymlinksInPath()` resolves symlinks **and then strips a leading
+`/private`**. FSEvents reports the opposite — `/private/var/folders/…`. A root
+normalised with `resolvingSymlinksInPath()` therefore matches **no event at
+all**, and nothing anywhere reports an error: the stream runs, events arrive, and
+every one of them is attributed to no repository. `WatchedRepository` uses
+`realpath(3)` instead.
+
+### What gets through
+
+The filter is `RepoEventFilter`, a pure function over paths so it can be tested
+as one — the stream itself cannot be tested without a filesystem race.
+
+- Anything ending `.lock` is dropped first. `index.lock` alone appears and
+  vanishes several times per git command and is the noisiest thing on the disk.
+- Inside the repository's `gitPath`, an **allow-list**: `HEAD`, `index`,
+  `packed-refs`, `ORIG_HEAD`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`,
+  `BISECT_LOG`, anything under `refs/`, and `rebase-merge` / `rebase-apply`.
+  A deny-list would have to keep up with git's own bookkeeping — objects, logs,
+  `FETCH_HEAD`, `COMMIT_EDITMSG` — and would lose.
+- `refs/grove/` is excluded: Grove writes those itself, during an operation that
+  already refreshes.
+- In the working tree, everything **except** paths under a `.git` that is not
+  this repository's — those belong to a nested repository or to a linked
+  worktree's pointer file.
+- Attribution is **longest prefix wins**, `.git` paths before roots. Repositories
+  nest: a submodule's root is inside its parent's, and its git directory is under
+  the parent's `.git/modules/`.
+
+`kFSEventStreamCreateFlagFileEvents` is what makes any of this possible —
+without it FSEvents reports the *directory*, and `.git` changing says nothing
+about whether it was `index` or `index.lock`.
+
+### Timing
+
+FSEvents latency 0.2 s, then a 300 ms debounce, **capped at 2 s**. The cap is
+not optional: a running build never leaves 300 ms of quiet, so a pure debounce
+would hold the refresh back for as long as the build ran.
+
+Teardown order is load-bearing, because the stream's `info` pointer is
+unretained: stop, **detach the dispatch queue**, invalidate, release. Detaching
+the queue first is the documented guarantee that no callback is still in flight.
+
+The C callback is a free `nonisolated func`. This module defaults to `MainActor`
+isolation, and an isolated function cannot be converted to a C function pointer
+at all.
+
+---
+
 ## What is solid
 
 ### Git layer — `Sources/Git/`
@@ -404,6 +461,12 @@ checks.
 Tests that need fixtures use `.enabled(if:)` and report as **skipped** rather
 than passing vacuously when they are missing.
 
+**Using the app dirties them.** A Debug build opens `Fixtures/` on launch, so
+staging or discarding anything while trying the UI out leaves the fixtures in a
+state the status tests do not expect — they fail with a wrong `staged.count` and
+look like a regression in the parser. Re-run `scripts/make-fixtures.sh` before
+trusting a failure there.
+
 ---
 
 ## Measured numbers
@@ -475,12 +538,6 @@ Alternatives that were costed and not taken, so they need not be re-costed:
 ---
 
 ## Remaining phases, in order
-
-**Phase 11** — FSEvents. One stream whose `pathsToWatch` is the repo roots.
-Filter *in the callback*: inside `.git/` allow only `HEAD`, `index` (not
-`index.lock`), `refs/`, `packed-refs`, `MERGE_HEAD`, `ORIG_HEAD`,
-`rebase-merge`, `rebase-apply`. `index.lock` churn is the noisiest source and
-must never trigger a refresh.
 
 **Phase 12** — persistence and the workspace switcher. The switcher is the one
 place `glassEffectTransition(.matchedGeometry)` is used; it must be anchored in

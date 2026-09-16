@@ -668,6 +668,83 @@ actor RepoEngine {
         }
     }
 
+    // MARK: - History
+
+    /// One page of history, newest first.
+    ///
+    /// `--topo-order` rather than date order: a graph drawn from date-ordered
+    /// commits has lines that cross for no reason, because a branch committed
+    /// long ago can land between two commits of another. It is also what git's
+    /// own `--graph` uses.
+    ///
+    /// - Parameter all: include every ref rather than just the current branch,
+    ///   which is what makes other branches visible in the rail at all.
+    func log(limit: Int = 200, skip: Int = 0, all: Bool = true) async throws -> [CommitInfo] {
+        guard await headExists() else { return [] }
+
+        var arguments = [
+            "log", "--topo-order", "--decorate=short",
+            "--max-count=\(limit)", "--skip=\(skip)",
+            "--format=format:\(CommitInfo.format)",
+        ]
+        if all { arguments.append("--all") }
+        let command = arguments
+
+        let result = try await limiter.withSlot {
+            try await runner.read(command, in: repository.root, outputByteLimit: 64 << 20)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: command) }
+        return CommitInfo.parse(result.stdout)
+    }
+
+    /// The full message of one commit, for the detail pane.
+    func commitMessage(_ oid: String) async throws -> String {
+        let arguments = ["show", "--no-patch", "--format=format:%B", oid]
+        let result = try await limiter.withSlot {
+            try await runner.read(arguments, in: repository.root)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
+        return result.stdoutText
+    }
+
+    /// Which files a commit touched, as `FileChange` values so the existing rows
+    /// can draw them.
+    ///
+    /// A merge is diffed against its **first parent** — the default for
+    /// `git show` — because the alternative is every file the branch touched,
+    /// which is not what the merge did.
+    func commitChanges(_ oid: String) async throws -> [FileChange] {
+        let nameStatus = [
+            "show", "--format=", "--name-status", "-z", "--find-renames", "--no-textconv", oid,
+        ]
+        let result = try await limiter.withSlot {
+            try await runner.read(nameStatus, in: repository.root, outputByteLimit: 64 << 20)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: nameStatus) }
+        return CommitChangeParser.parse(result.stdout)
+    }
+
+    /// One file's diff within a commit.
+    func commitDiff(
+        for change: FileChange, in oid: String, contextLines: Int = 3
+    ) async throws
+        -> String
+    {
+        let paths = [change.displayPath] + (change.originalDisplayPath.map { [$0] } ?? [])
+        let arguments =
+            [
+                "show", "--format=", "--no-color", "--no-ext-diff", "--no-textconv",
+                "--find-renames", "--diff-algorithm=histogram", "-U\(contextLines)", oid, "--",
+            ] + paths
+
+        let result = try await limiter.withSlot {
+            try await runner.read(
+                arguments, in: repository.root, timeout: .seconds(60), outputByteLimit: 256 << 20)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
+        return result.stdoutText
+    }
+
     // MARK: - Conflicts
 
     /// Which side of a conflict to take wholesale.

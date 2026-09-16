@@ -333,6 +333,8 @@ private struct ListColumn: View {
                 switch section {
                 case .workingCopy:
                     WorkingCopyPane(repo: repo, workspace: workspace)
+                case .history:
+                    HistoryPane(repo: repo)
                 case .branches:
                     BranchesPane(repo: repo)
                 default:
@@ -471,7 +473,23 @@ private struct DetailColumn: View {
     let selection: SidebarSelection?
 
     var body: some View {
-        if let repo = focusedRepo, let selected = repo.selectedChange {
+        if let repo = focusedRepo, isShowingHistory {
+            // History is read-only: the same diff view, pointed at a commit
+            // rather than at the working copy.
+            if let commit = repo.selectedCommit, let change = repo.selectedCommitChange {
+                DiffPane(
+                    repo: repo,
+                    selection: SelectedChange(change: change, staged: true),
+                    commitOID: commit.oid
+                )
+            } else {
+                ContentUnavailableView(
+                    "No Commit Selected",
+                    systemImage: "clock",
+                    description: Text("Select a commit, then a file within it.")
+                )
+            }
+        } else if let repo = focusedRepo, let selected = repo.selectedChange {
             // A conflicted file is not a diff. It has no staged/unstaged side to
             // switch between and no lines to stage — it has three versions and a
             // decision, which is a different pane.
@@ -487,6 +505,11 @@ private struct DetailColumn: View {
                 description: Text("Select a changed file to view its diff.")
             )
         }
+    }
+
+    private var isShowingHistory: Bool {
+        if case .repo(_, .history) = selection { return true }
+        return false
     }
 
     /// Which repository's diff the column shows.

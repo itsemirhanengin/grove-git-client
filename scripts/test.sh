@@ -30,11 +30,17 @@ else
     echo "ok"
 fi
 
-if [[ ! -d "$ROOT/Fixtures/alpha" ]]; then
-    echo "=== fixtures missing — generating ==="
-    "$ROOT/scripts/make-fixtures.sh" >/dev/null || { echo "fixture build failed"; exit 1; }
-    echo "ok"
-fi
+# Regenerated on **every** run, not just when missing.
+#
+# A Debug build opens `Fixtures/` on launch, so trying the app out stages a file,
+# resolves gamma's conflict, or discards something — and the status tests then
+# fail with a wrong count that looks exactly like a parser regression. It cost
+# two debugging rounds before this was made unconditional. The fixtures are
+# generated and gitignored, so the only thing a rebuild throws away is whatever
+# was being poked at in the running app.
+echo "=== regenerating fixtures ==="
+"$ROOT/scripts/make-fixtures.sh" >/dev/null || { echo "fixture build failed"; exit 1; }
+echo "ok"
 
 echo "=== DiffCore package tests ==="
 set +e

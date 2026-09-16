@@ -3,7 +3,7 @@
 Native macOS 27 multi-repo git client, SwiftUI. Written for picking the work up
 in a fresh session.
 
-**State: phases 0–14 done. Phase 8 (diff viewer) was rebuilt from scratch on
+**State: phases 0–15 done. Phase 8 (diff viewer) was rebuilt from scratch on
 2026-09-16 on a completely different footing — the diff body is a `WKWebView`,
 not AppKit. Read "The diff surface" before touching it, and "What went wrong"
 before deciding to make it native again. Phase 10 (hunk/line staging) landed the
@@ -77,7 +77,7 @@ Corrections worth keeping:
 | 12 | Persistence + workspace switcher | ✅ — the morph was dropped, see below |
 | 13 | fetch/pull/push, branch switch, merge | ✅ |
 | 14 | Conflict resolver | ✅ |
-| 15 | History + commit graph | ⬜ |
+| 15 | History + commit graph | ✅ |
 | 16 | AI commit messages (`claude -p`) | ⬜ |
 | 17 | *(absorbed into 9)* | — |
 | 18 | Operation log, recovery window, stashes | ⬜ |
@@ -183,7 +183,7 @@ renderer shipped blank twice. Worth a session. Likely leads: a test host with th
 WebKit entitlements, an XCTest UI-test target instead of a unit target, or
 driving the page in `safari`/`node` against the built `Web/DiffRenderer`.
 
-Counts as of this handoff: **30 DiffCore tests + 170 app tests**, 3 of the app
+Counts as of this handoff: **40 DiffCore tests + 179 app tests**, 3 of the app
 tests disabled as above. Recount after any change.
 
 ---
@@ -569,6 +569,57 @@ leaving the other mounted stacks two files on top of each other.
 
 ---
 
+## History and the commit graph — phase 15
+
+The **layout** is `Packages/DiffCore/CommitGraph.swift` — arithmetic over
+strings, no framework, and tested as such. The same lane model gitk and GitX
+use:
+
+- Each column holds the id it is waiting for. A commit takes the column already
+  waiting for it, or the **lowest free** one — lowest, so a branch that ends
+  gives its column back instead of the rail creeping rightwards forever.
+- The **first parent keeps the commit's own column**, which is what holds a
+  branch on one line for its whole length.
+- Every column waiting for the same commit converges on it. More than one
+  happens whenever two branches share a parent, and letting each keep a column
+  would draw two lines into one dot from the same side.
+- Past `CommitGraph.maximumLanes` (12) extra branches share the last column: a
+  slightly wrong picture beats an unreadably wide one.
+
+Two things the tests had to correct about my own expectations, both worth
+keeping in mind when reading the output:
+
+- Unrelated **roots reuse column 0**. Nothing waits for them and nothing
+  follows, so they are not a branch and do not need their own column.
+- The row where two branches **converge is still two columns wide** — the lines
+  have to arrive somewhere. The column is free on the row *below* it.
+
+`git log` is `--topo-order`, which is what `--graph` uses: a date-ordered graph
+has lines crossing for no reason, because a branch committed long ago can land
+between two commits of another. Records use `\u{1f}` / `\u{1e}` separators and
+are parsed by **counting fields**, so a pathological subject truncates one row
+rather than desynchronising the rest. `--all` is on, or no other branch appears
+in the rail at all.
+
+History pages at 200 commits, and the graph is laid out over **everything
+loaded** rather than per page — a branch that opens on page one and closes on
+page three is one shape.
+
+`CommitChangeParser` reads `--name-status -z`, where a **rename or copy consumes
+three records**, not two. Advancing by two reads the new path as the next status
+and loses the rest of the commit — the same trap porcelain v2 sets.
+
+The rail is deliberately **monochrome**. Grove's palette gives colour a meaning
+(red removed and destructive, amber warning, blue modified); a rail that tinted
+lanes for decoration would spend all of it at once. Position carries the branch,
+weight carries whether a line concerns this commit, and a merge dot is hollow.
+
+`DiffPane` takes an optional `commitOID`. With it set the diff comes from that
+commit and both write-side controls disappear — there is no staged side to
+switch to and nothing to stage from history.
+
+---
+
 ## What is solid
 
 ### Git layer — `Sources/Git/`
@@ -669,11 +720,13 @@ checks.
 Tests that need fixtures use `.enabled(if:)` and report as **skipped** rather
 than passing vacuously when they are missing.
 
-**Using the app dirties them.** A Debug build opens `Fixtures/` on launch, so
-staging or discarding anything while trying the UI out leaves the fixtures in a
-state the status tests do not expect — they fail with a wrong `staged.count` and
-look like a regression in the parser. Re-run `scripts/make-fixtures.sh` before
-trusting a failure there.
+**Using the app dirties them**, so `scripts/test.sh` now regenerates them on
+**every** run rather than only when they are missing. A Debug build opens
+`Fixtures/` on launch, so trying the UI out stages a file or resolves gamma's
+conflict, and the status tests then fail with a wrong count that looks exactly
+like a parser regression — it cost two debugging rounds before this was made
+unconditional. The cost is that a test run throws away whatever was being poked
+at in the running app.
 
 ---
 
@@ -747,8 +800,8 @@ Alternatives that were costed and not taken, so they need not be re-costed:
 
 ## Remaining phases, in order
 
-**Phases 15–18** — history with a commit graph, AI commit messages, then the
-operation log and recovery window. Branch deletion, rename and force-push were
+**Phases 16–18** — AI commit messages, then the operation log and recovery
+window. Branch deletion, rename and force-push were
 left out of phase 13 and have no home yet; a three-way (base / ours / theirs)
 view of a conflict was left out of phase 14, which resolves from the merged file
 with markers instead.

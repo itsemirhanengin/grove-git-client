@@ -19,6 +19,11 @@ struct DiffPane: View {
     let repo: RepoViewModel
     let selection: SelectedChange
 
+    /// When set, the diff is a file inside that commit rather than the working
+    /// copy's. History is read-only here: there is no staged side to switch to
+    /// and nothing to stage, so both of those controls disappear.
+    var commitOID: String?
+
     @State private var patch = ""
     @State private var isLoading = false
     @State private var loadError: String?
@@ -62,7 +67,7 @@ struct DiffPane: View {
     }
 
     private var taskKey: String {
-        "\(repo.id.path)|\(change.displayPath)|\(selection.staged)|\(contextLines)"
+        "\(repo.id.path)|\(commitOID ?? "")|\(change.displayPath)|\(selection.staged)|\(contextLines)"
     }
 
     // MARK: Header
@@ -101,7 +106,11 @@ struct DiffPane: View {
             // Both sides of a file that is staged *and* modified again are worth
             // looking at, so this is a switch rather than a label. A file that
             // exists on only one side gets a label instead of a dead control.
-            if change.isStaged && change.isUnstaged {
+            if commitOID != nil {
+                Text(change.indexStatus.letter.isEmpty ? "In commit" : "In commit")
+                    .font(Typography.secondaryDetail)
+                    .foregroundStyle(.secondary)
+            } else if change.isStaged && change.isUnstaged {
                 Picker("", selection: stagedBinding) {
                     Text("Staged").tag(true)
                     Text("Unstaged").tag(false)
@@ -252,7 +261,7 @@ struct DiffPane: View {
     /// git is on this side of the bridge.
     @ViewBuilder
     private var selectionBar: some View {
-        if !picked.isEmpty {
+        if !picked.isEmpty && commitOID == nil {
             VStack(spacing: 0) {
                 Divider()
                 HStack(spacing: Space.md) {
@@ -326,8 +335,13 @@ struct DiffPane: View {
         defer { isLoading = false }
 
         do {
-            patch = try await repo.diff(
-                for: change, staged: selection.staged, contextLines: contextLines)
+            if let commitOID {
+                patch = try await repo.commitDiff(
+                    for: change, in: commitOID, contextLines: contextLines)
+            } else {
+                patch = try await repo.diff(
+                    for: change, staged: selection.staged, contextLines: contextLines)
+            }
             // A file with no hunks is a pure rename or a binary — nothing to
             // pick from, and the bar never appears.
             parsed = UnifiedPatchParser.parse(patch).first { !$0.hunks.isEmpty }

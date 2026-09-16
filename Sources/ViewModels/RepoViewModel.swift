@@ -506,6 +506,91 @@ final class RepoViewModel: Identifiable {
         branches = (try? await engine.branches()) ?? []
     }
 
+    // MARK: History
+
+    /// How many commits one page holds.
+    ///
+    /// A repository can have a hundred thousand of them. The list pages instead
+    /// of asking git for all of it, because the graph layout and the row views
+    /// are both linear in what has been loaded.
+    static let historyPageSize = 200
+
+    private(set) var commits: [CommitInfo] = []
+    private(set) var graphRows: [CommitGraphRow] = []
+    private(set) var isLoadingHistory = false
+
+    /// False once a page comes back short, which is the only reliable end of
+    /// history — `git log` will happily return nothing past the last commit.
+    private(set) var hasMoreHistory = true
+
+    /// The commit whose detail is showing, and the file within it.
+    var selectedCommit: CommitInfo?
+    var selectedCommitChange: FileChange?
+    private(set) var selectedCommitMessage = ""
+    private(set) var selectedCommitChanges: [FileChange] = []
+
+    func loadHistory() async {
+        guard commits.isEmpty, !isLoadingHistory else { return }
+        await fetchHistoryPage(reset: true)
+    }
+
+    /// Reloads from the top. Called when HEAD moves under the list.
+    func reloadHistory() async {
+        await fetchHistoryPage(reset: true)
+    }
+
+    func loadMoreHistory() async {
+        guard hasMoreHistory, !isLoadingHistory else { return }
+        await fetchHistoryPage(reset: false)
+    }
+
+    private func fetchHistoryPage(reset: Bool) async {
+        isLoadingHistory = true
+        defer { isLoadingHistory = false }
+
+        let skip = reset ? 0 : commits.count
+        guard let page = try? await engine.log(limit: Self.historyPageSize, skip: skip) else {
+            if reset { commits = []; graphRows = [] }
+            hasMoreHistory = false
+            return
+        }
+
+        if reset { commits = page } else { commits += page }
+        hasMoreHistory = page.count == Self.historyPageSize
+
+        // Laid out over everything loaded, not just the new page: a branch that
+        // opened on page one and closes on page three is one shape, and laying
+        // out a page in isolation would draw it as two.
+        graphRows = CommitGraph.layout(
+            commits.map { CommitGraphNode(id: $0.oid, parents: $0.parents) })
+    }
+
+    func selectCommit(_ commit: CommitInfo) async {
+        selectedCommit = commit
+        selectedCommitChange = nil
+        selectedCommitMessage = ""
+        selectedCommitChanges = []
+
+        async let message = try? engine.commitMessage(commit.oid)
+        async let changes = try? engine.commitChanges(commit.oid)
+
+        let (loadedMessage, loadedChanges) = await (message, changes)
+        // The user may have moved on while git was working.
+        guard selectedCommit?.oid == commit.oid else { return }
+
+        selectedCommitMessage = loadedMessage ?? ""
+        selectedCommitChanges = loadedChanges ?? []
+        selectedCommitChange = selectedCommitChanges.first
+    }
+
+    func commitDiff(
+        for change: FileChange, in oid: String, contextLines: Int = 3
+    ) async throws
+        -> String
+    {
+        try await engine.commitDiff(for: change, in: oid, contextLines: contextLines)
+    }
+
     // MARK: Conflicts
 
     /// Whether the repository is mid-merge with nothing left to resolve, so the

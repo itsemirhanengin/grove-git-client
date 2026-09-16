@@ -1,3 +1,5 @@
+import AppKit
+import Combine
 import SwiftUI
 
 /// Grove's three-column shell.
@@ -63,6 +65,17 @@ struct RootView: View {
         // from the diff, and those two panes are not both on screen for every
         // sidebar section.
         .repoOperationAlerts(for: focusedRepo)
+        .onChange(of: selection) { _, moved in model.recordSelection(moved) }
+        // Set only once a workspace has finished discovering, because before
+        // that there are no repositories for a restored selection to point at.
+        .onChange(of: model.restoredSelection) { _, restored in
+            if let restored { selection = restored }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
+        ) { _ in
+            model.flushState()
+        }
         .navigationTitle(model.workspace?.name ?? "Grove")
         .navigationSubtitle(subtitle)
         .toolbarTitleDisplayMode(.inline)
@@ -169,6 +182,9 @@ private struct SidebarColumn: View {
         // chrome; `.soft` is for continuous content like code.
         .scrollEdgeEffectStyle(.hard, for: .top)
         .scrollEdgeEffectStyle(.soft, for: .bottom)
+        // In the sidebar rather than a popover — see ``WorkspaceSwitcher`` for
+        // why the morph cannot cross a window boundary.
+        .safeAreaBar(edge: .top, spacing: 0) { WorkspaceSwitcher(model: model) }
     }
 
     private func expansion(
@@ -176,7 +192,7 @@ private struct SidebarColumn: View {
     ) -> Binding<Bool> {
         Binding(
             get: { workspace.isExpanded(repo) },
-            set: { repo.expansionOverride = $0 }
+            set: { workspace.setExpanded(repo, $0) }
         )
     }
 

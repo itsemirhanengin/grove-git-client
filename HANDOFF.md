@@ -3,7 +3,7 @@
 Native macOS 27 multi-repo git client, SwiftUI. Written for picking the work up
 in a fresh session.
 
-**State: phases 0–11 done. Phase 8 (diff viewer) was rebuilt from scratch on
+**State: phases 0–12 done. Phase 8 (diff viewer) was rebuilt from scratch on
 2026-09-16 on a completely different footing — the diff body is a `WKWebView`,
 not AppKit. Read "The diff surface" before touching it, and "What went wrong"
 before deciding to make it native again. Phase 10 (hunk/line staging) landed the
@@ -74,7 +74,7 @@ Corrections worth keeping:
 | 9 | Side-by-side, word diff, syntax highlighting | ✅ — comes from the renderer |
 | 10 | Hunk/line staging (`PatchBuilder`) | ✅ — parser is back, see below |
 | 11 | FSEvents live refresh | ✅ — see "Live refresh" |
-| 12 | Persistence + workspace switcher (the glass morph) | ⬜ |
+| 12 | Persistence + workspace switcher (the glass morph) | ✅ |
 | 13 | fetch/pull/push, branch switch, merge | ⬜ |
 | 14 | Conflict resolver | ⬜ |
 | 15 | History + commit graph | ⬜ |
@@ -183,7 +183,7 @@ renderer shipped blank twice. Worth a session. Likely leads: a test host with th
 WebKit entitlements, an XCTest UI-test target instead of a unit target, or
 driving the page in `safari`/`node` against the built `Web/DiffRenderer`.
 
-Counts as of this handoff: **30 DiffCore tests + 139 app tests**, 3 of the app
+Counts as of this handoff: **30 DiffCore tests + 148 app tests**, 3 of the app
 tests disabled as above. Recount after any change.
 
 ---
@@ -352,13 +352,70 @@ FSEvents latency 0.2 s, then a 300 ms debounce, **capped at 2 s**. The cap is
 not optional: a running build never leaves 300 ms of quiet, so a pure debounce
 would hold the refresh back for as long as the build ran.
 
-Teardown order is load-bearing, because the stream's `info` pointer is
-unretained: stop, **detach the dispatch queue**, invalidate, release. Detaching
-the queue first is the documented guarantee that no callback is still in flight.
+Teardown is stop → invalidate → release, then a `queue.sync {}` drain. Do
+**not** call `FSEventStreamSetDispatchQueue(…, nil)` first: that unschedules the
+stream, and invalidating an unscheduled stream trips a client assertion inside
+FSEvents — *"Must call FSEventStreamScheduleWithRunLoop() before calling
+FSEventStreamInvalidate()"*, logged rather than crashed, so it is easy to ship.
+The drain on the serial queue is what actually guarantees no callback is still
+running, which is what makes the unretained `info` pointer safe.
 
 The C callback is a free `nonisolated func`. This module defaults to `MainActor`
 isolation, and an isolated function cannot be converted to a C function pointer
 at all.
+
+---
+
+## Persistence and the switcher — phase 12
+
+`Sources/Persistence/AppStateStore.swift` — a JSON file at
+`~/Library/Application Support/Grove/state.json`, not `UserDefaults`. This is a
+developer tool; state you can open, read and delete beats state `cfprefsd`
+caches somewhere on your behalf.
+
+What is remembered: the recent workspaces (capped at 8), and per workspace the
+**collapsed** repositories and the sidebar selection. What is deliberately not:
+the scope filter — restoring a workspace into a non-default scope opens to a
+list that hides most of it, with nothing on screen explaining why.
+
+- Repository keys are paths **relative to the workspace root**, so moving or
+  re-cloning the whole folder keeps the state. `Repository.relativePath(from:)`
+  exists for this.
+- **Collapsed**, not expanded: a repository that appears in the workspace later
+  should arrive open like every other one, not silently shut.
+- Reading never throws and never reports. A missing file is a first launch, and
+  a corrupt one must not be why the app will not open. A file whose `version` is
+  from the future is discarded rather than half-read.
+- Writes are debounced by 1 s and flushed synchronously on
+  `NSApplication.willTerminateNotification`. The file is a couple of kilobytes;
+  the alternative on the way out of the process is losing it.
+
+**The collapsed set is applied inside `discover()`, while the view models are
+being built — never in a pass afterwards.** A later pass changes the sidebar's
+row count during an update AppKit is still applying, which is the reentrancy the
+whole expansion design exists to avoid.
+
+Launch order for which workspace opens: `GROVE_WORKSPACE`, then the most recent,
+then the Debug-only `Fixtures/` fallback.
+
+### The switcher
+
+`Sources/Sidebar/WorkspaceSwitcher.swift`, in a `safeAreaBar(edge: .top)` on the
+sidebar list. It is the **only** place Grove uses `.matchedGeometry`, and that
+restraint is why it reads as special.
+
+- Anchored in the sidebar, **not** a `.popover`. A popover is a separate window
+  and glass cannot matched-geometry across one; the morph would degrade to a
+  cross-fade. The cost is that the panel pushes the list down instead of
+  floating over the window — the right trade here.
+- The morph goes through `appGlassMorph(id:in:shape:)` in `Glass.swift`, so the
+  Reduce Transparency and Increase Contrast fallbacks still apply and the
+  one-file glass rule holds.
+- Its two identities are a `nonisolated enum`. A nested enum in a MainActor view
+  gets a main-actor-isolated `Hashable` conformance, which cannot satisfy
+  `glassEffectID`'s `Sendable` requirement.
+- No ⌘O on the panel's "Open Workspace…": the toolbar already owns that
+  shortcut, and two views claiming one is undefined rather than redundant.
 
 ---
 
@@ -538,11 +595,6 @@ Alternatives that were costed and not taken, so they need not be re-costed:
 ---
 
 ## Remaining phases, in order
-
-**Phase 12** — persistence and the workspace switcher. The switcher is the one
-place `glassEffectTransition(.matchedGeometry)` is used; it must be anchored in
-the sidebar, not a `.popover`, because a popover is a separate window and glass
-cannot matched-geometry across one.
 
 **Phases 13–18** — network ops, conflict resolver, history with a commit graph,
 AI commit messages, then the operation log and recovery window.

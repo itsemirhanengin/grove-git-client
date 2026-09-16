@@ -244,9 +244,13 @@ nonisolated final class RepoWatcher: @unchecked Sendable {
 
     /// Tears the stream down so that no callback can still be in flight.
     ///
-    /// The order matters: detaching the dispatch queue **before** invalidating
-    /// is the documented way to guarantee the callback has stopped, and it is
-    /// what makes the unretained `info` pointer above safe.
+    /// Stop, invalidate, release — and **not** `FSEventStreamSetDispatchQueue(…,
+    /// nil)` first. Detaching the queue unschedules the stream, and invalidating
+    /// an unscheduled stream trips a client assertion inside FSEvents:
+    /// *"Must call FSEventStreamScheduleWithRunLoop() before calling
+    /// FSEventStreamInvalidate()"*. Draining `queue` afterwards is what actually
+    /// guarantees no callback is still running, which is what makes the
+    /// unretained `info` pointer above safe.
     func stop() {
         lock.lock()
         let existing = stream
@@ -262,9 +266,12 @@ nonisolated final class RepoWatcher: @unchecked Sendable {
 
         guard let existing else { return }
         FSEventStreamStop(existing)
-        FSEventStreamSetDispatchQueue(existing, nil)
         FSEventStreamInvalidate(existing)
         FSEventStreamRelease(existing)
+
+        // `queue` is serial, so once an empty block has run on it, whatever
+        // callback was in flight when we invalidated has finished.
+        queue.sync {}
     }
 
     // MARK: Events

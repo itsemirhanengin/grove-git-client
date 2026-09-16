@@ -19,6 +19,14 @@ final class WorkspaceModel: Identifiable {
     var repos: [RepoViewModel] = []
     var discoveryState: DiscoveryState = .idle
 
+    /// Repositories the user had collapsed last time, by path relative to
+    /// ``root``. Set **before** ``discover()`` — see ``isExpanded(_:)`` for why
+    /// it may not be applied afterwards.
+    var collapsedRepos: Set<String> = []
+
+    /// Told when the collapsed set changes, so it can be written to disk.
+    var onCollapsedReposChange: ((Set<String>) -> Void)?
+
     /// Scope and filter from the accessory bar.
     var scope: RepoScope = .all
     var filterText: String = ""
@@ -70,10 +78,18 @@ final class WorkspaceModel: Identifiable {
         let found = await RepoDiscovery.scan(root: root, config: config)
 
         repos = found.map { repository in
-            RepoViewModel(
+            let model = RepoViewModel(
                 repository: repository,
                 engine: RepoEngine(repository: repository, runner: runner, limiter: limiter)
             )
+            // Restored here, while the view model is still being built, rather
+            // than in a pass afterwards. A later pass would change the sidebar's
+            // row count during an update AppKit is still applying — the exact
+            // reentrancy `isExpanded(_:)` exists to avoid.
+            if collapsedRepos.contains(repository.relativePath(from: root)) {
+                model.expansionOverride = false
+            }
+            return model
         }
         discoveryState = .ready(repoCount: repos.count)
 
@@ -110,5 +126,14 @@ final class WorkspaceModel: Identifiable {
     /// showing them costs little.
     func isExpanded(_ repo: RepoViewModel) -> Bool {
         repo.expansionOverride ?? true
+    }
+
+    /// The user's own expand/collapse, recorded so it survives a relaunch.
+    func setExpanded(_ repo: RepoViewModel, _ expanded: Bool) {
+        repo.expansionOverride = expanded
+
+        let key = repo.repository.relativePath(from: root)
+        if expanded { collapsedRepos.remove(key) } else { collapsedRepos.insert(key) }
+        onCollapsedReposChange?(collapsedRepos)
     }
 }

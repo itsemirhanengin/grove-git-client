@@ -21,6 +21,16 @@ final class AppModel {
     /// a `ProgressView`, because ten spinners in a sidebar is just noise.
     var isRefreshing = false
 
+    /// Recently opened workspaces, newest first — what the switcher offers.
+    private(set) var recentWorkspaces: [URL] = []
+
+    /// Where the sidebar should go once a workspace has finished loading.
+    /// `RootView` watches this; it is set only after discovery, because before
+    /// that there are no repositories for a selection to point at.
+    private(set) var restoredSelection: SidebarSelection?
+
+    private let store: AppStateStore
+
     private var services: AppServices?
 
     /// Live refresh. One stream for the whole workspace — see ``RepoWatcher``.
@@ -30,6 +40,11 @@ final class AppModel {
     ///
     /// Environment resolution asks a login shell for `PATH`, which costs a
     /// process, so it happens once here rather than per command.
+    init(store: AppStateStore = AppStateStore()) {
+        self.store = store
+        self.recentWorkspaces = store.recentWorkspaces()
+    }
+
     func bootstrap() async {
         let environment = await GitEnvironment.resolve()
         services = AppServices(
@@ -39,9 +54,28 @@ final class AppModel {
         )
         isBootstrapping = false
 
-        if let development = Self.developmentWorkspace {
-            await open(development)
+        if let workspace = workspaceToOpenAtLaunch {
+            await open(workspace)
         }
+    }
+
+    /// What to open on launch, in order of who gets to decide.
+    ///
+    /// `GROVE_WORKSPACE` first, because it exists to override everything. Then
+    /// whatever was open last. The `Fixtures/` fallback stays last and stays
+    /// Debug-only, so a fresh Debug build still comes up with real data on
+    /// screen instead of an empty window.
+    private var workspaceToOpenAtLaunch: URL? {
+        if let override = ProcessInfo.processInfo.environment["GROVE_WORKSPACE"] {
+            return URL(filePath: override)
+        }
+        return recentWorkspaces.first ?? Self.developmentWorkspace
+    }
+
+    /// Writes anything still pending. Called on the way out, where `NSApplication`
+    /// gives us one chance and no later.
+    func flushState() {
+        store.flush()
     }
 
     func open(_ url: URL) async {
@@ -57,10 +91,57 @@ final class AppModel {
             runner: services.runner,
             limiter: services.limiter
         )
+        // Before `discover()`, never after: the collapsed set has to be in place
+        // while the repository view models are built, or restoring it changes
+        // the sidebar's row count mid-update.
+        model.collapsedRepos = store.workspaceState(for: url).collapsedRepos
+        model.onCollapsedReposChange = { [weak self] collapsed in
+            self?.store.updateWorkspace(url) { $0.collapsedRepos = collapsed }
+        }
         workspace = model
+
+        store.recordOpened(url)
+        recentWorkspaces = store.recentWorkspaces()
 
         await model.discover()
         startWatching()
+        restoredSelection = selectionToRestore(in: model)
+    }
+
+    /// Drops a workspace from the switcher, along with what it remembered.
+    func forgetWorkspace(_ url: URL) {
+        store.forget(url)
+        recentWorkspaces = store.recentWorkspaces()
+    }
+
+    // MARK: Sidebar selection
+
+    private func selectionToRestore(in workspace: WorkspaceModel) -> SidebarSelection {
+        let persisted = store.workspaceState(for: workspace.root)
+        guard let path = persisted.selectedRepo,
+            let section = persisted.selectedSection.flatMap(RepoSection.init(rawValue:)),
+            let repo = workspace.repos.first(where: {
+                $0.repository.relativePath(from: workspace.root) == path
+            })
+        else { return .overview }
+        return .repo(repo.id, section)
+    }
+
+    /// Stores where the sidebar is, by **relative** path — so the selection
+    /// survives the workspace folder being moved or re-cloned elsewhere.
+    func recordSelection(_ selection: SidebarSelection?) {
+        guard let workspace else { return }
+        store.updateWorkspace(workspace.root) { state in
+            guard case .repo(let id, let section) = selection,
+                let repo = workspace.repos.first(where: { $0.id == id })
+            else {
+                state.selectedRepo = nil
+                state.selectedSection = nil
+                return
+            }
+            state.selectedRepo = repo.repository.relativePath(from: workspace.root)
+            state.selectedSection = section.rawValue
+        }
     }
 
     /// Points the watcher at whatever discovery found.

@@ -3,7 +3,7 @@
 Native macOS 27 multi-repo git client, SwiftUI. Written for picking the work up
 in a fresh session.
 
-**State: phases 0–13 done. Phase 8 (diff viewer) was rebuilt from scratch on
+**State: phases 0–14 done. Phase 8 (diff viewer) was rebuilt from scratch on
 2026-09-16 on a completely different footing — the diff body is a `WKWebView`,
 not AppKit. Read "The diff surface" before touching it, and "What went wrong"
 before deciding to make it native again. Phase 10 (hunk/line staging) landed the
@@ -76,7 +76,7 @@ Corrections worth keeping:
 | 11 | FSEvents live refresh | ✅ — see "Live refresh" |
 | 12 | Persistence + workspace switcher | ✅ — the morph was dropped, see below |
 | 13 | fetch/pull/push, branch switch, merge | ✅ |
-| 14 | Conflict resolver | ⬜ |
+| 14 | Conflict resolver | ✅ |
 | 15 | History + commit graph | ⬜ |
 | 16 | AI commit messages (`claude -p`) | ⬜ |
 | 17 | *(absorbed into 9)* | — |
@@ -183,7 +183,7 @@ renderer shipped blank twice. Worth a session. Likely leads: a test host with th
 WebKit entitlements, an XCTest UI-test target instead of a unit target, or
 driving the page in `safari`/`node` against the built `Web/DiffRenderer`.
 
-Counts as of this handoff: **30 DiffCore tests + 160 app tests**, 3 of the app
+Counts as of this handoff: **30 DiffCore tests + 170 app tests**, 3 of the app
 tests disabled as above. Recount after any change.
 
 ---
@@ -503,6 +503,72 @@ ahead/behind and the current marker are stale the moment anything touches HEAD.
 
 ---
 
+## Conflict resolution — phase 14
+
+`@pierre/diffs` ships the resolver: `UnresolvedFile` parses the conflict markers,
+draws Accept Current / Incoming / Both in the gutter of each region, and hands
+back the **whole resolved file** through `onMergeConflictResolve`. Grove writes
+that to disk and stages it. Nothing here re-derives where a conflict region
+starts — that is the one thing the library has already done.
+
+`ConflictPane` replaces `DiffPane` whenever the selected change is conflicted. A
+conflicted file is not a diff: it has no staged/unstaged side to switch between
+and no lines to stage, it has three versions and a decision.
+
+### What is load-bearing
+
+- **The file is read from the working tree**, markers and all — not reassembled
+  from the three index stages. What git wrote is what the user sees in their
+  editor, and showing a different reconstruction of it is lying about the thing
+  they are being asked to resolve. A test asserts it is byte-identical to disk.
+- **Staging is what settles a conflict.** The markers being gone is not enough;
+  `applyResolution` and `resolve(_:using:)` both `git add` in the same breath. A
+  merge commit with an unstaged "resolution" is how one gets silently lost.
+- **Taking *ours* can look like nothing happened.** The file comes back
+  identical to HEAD, so it appears in no status list at all — it is not staged,
+  not modified, not conflicted. The invariant that actually holds for both sides
+  is `git ls-files --unmerged` coming back empty, and that is what the tests
+  assert.
+- **Mark Resolved is disabled while `<<<<<<<` is still in the file.** Committing
+  conflict markers is the most common way a merge goes wrong and is trivially
+  detectable.
+- **A partly-resolved file is written but not staged.** A file with several
+  conflict regions fires `onMergeConflictResolve` once *per region*, each time
+  with the whole file. Staging on the first one settles the conflict in the
+  index **around the remaining markers** — which is precisely how markers end up
+  in a commit. `applyResolution` stages only when `containsConflictMarkers` says
+  there is nothing left, and returns whether it did.
+- **`UnresolvedFile` parses a file exactly once.** Rendering it again with
+  different contents throws *"uncontrolled unresolved files parse the file only
+  once. Later updates must come from the cached diff state."* Two consequences,
+  both load-bearing:
+  - `main.ts` keys the live component by file **and generation**, and builds a
+    **new** one when that key changes rather than calling `render` twice.
+  - `ConflictPane` keeps what the page hands back in a separate `resolved`
+    property and never writes it into `contents`. Writing it there would change
+    the payload, re-render the page, and hand the component a second parse of a
+    document it already owns.
+- **`selectedChange` is reconciled on every refresh.** It holds a snapshot, and a
+  resolved file's snapshot still reports `isConflicted` forever — which left the
+  resolver on screen over a file that no longer had a conflict.
+- A **binary** conflict throws `GitError.binaryConflict` rather than showing
+  mangled text. Taking one side whole still works — it is the only resolution a
+  binary has.
+- `continueMerge` is `git commit --no-edit`, which keeps the message git already
+  wrote in `MERGE_MSG`. No `--no-verify`: a merge is exactly when a pre-commit
+  hook is worth listening to.
+
+### One web surface, two documents
+
+`DiffWebView` now takes a `DiffWebContent` — `.diff` or `.conflict` — instead of
+a bare payload, and `main.ts` gained `window.grove.renderConflict`. One
+`WKWebView`, because a second would mean a second renderer load and a second
+464 kB parse for a pane the user only ever sees one of. The two components tear
+each other down on switch: both create their own `<diffs-container>`, and
+leaving the other mounted stacks two files on top of each other.
+
+---
+
 ## What is solid
 
 ### Git layer — `Sources/Git/`
@@ -681,9 +747,11 @@ Alternatives that were costed and not taken, so they need not be re-costed:
 
 ## Remaining phases, in order
 
-**Phases 14–18** — conflict resolver, history with a commit graph, AI commit
-messages, then the operation log and recovery window. Branch deletion, rename
-and force-push were left out of phase 13 and have no home yet.
+**Phases 15–18** — history with a commit graph, AI commit messages, then the
+operation log and recovery window. Branch deletion, rename and force-push were
+left out of phase 13 and have no home yet; a three-way (base / ours / theirs)
+view of a conflict was left out of phase 14, which resolves from the merged file
+with markers instead.
 
 Also outstanding: **Settings**, which is where context width and unified/split
 are meant to live, and where the disabled rendering tests should be revisited.

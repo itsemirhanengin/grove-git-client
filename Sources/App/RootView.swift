@@ -472,7 +472,14 @@ private struct DetailColumn: View {
 
     var body: some View {
         if let repo = focusedRepo, let selected = repo.selectedChange {
-            DiffPane(repo: repo, selection: selected)
+            // A conflicted file is not a diff. It has no staged/unstaged side to
+            // switch between and no lines to stage — it has three versions and a
+            // decision, which is a different pane.
+            if selected.change.isConflicted {
+                ConflictPane(repo: repo, change: selected.change)
+            } else {
+                DiffPane(repo: repo, selection: selected)
+            }
         } else {
             ContentUnavailableView(
                 "No File Selected",

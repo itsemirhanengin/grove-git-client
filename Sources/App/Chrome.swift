@@ -134,6 +134,14 @@ struct RepoActionBar: View {
                 Button("Abort") { repo.abortInProgress() }
                     .font(Typography.secondaryDetail)
                     .disabled(repo.isBusy)
+
+                // Only once nothing is conflicted any more. A merge commit with
+                // an unresolved file in it is not something to offer a shortcut
+                // to.
+                Button("Continue") { repo.continueMerge() }
+                    .font(Typography.secondaryDetail)
+                    .disabled(!repo.canContinueMerge)
+                    .help("Commit the \(operation.label.lowercased()) with git's own message")
             }
 
             Spacer(minLength: Space.md)

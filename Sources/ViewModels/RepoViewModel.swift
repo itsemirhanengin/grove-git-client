@@ -126,6 +126,8 @@ final class RepoViewModel: Identifiable {
         case .unbornBranch: return "No commits yet"
         case .detachedHead: return "HEAD is detached — switch to a branch first"
         case .noUpstream: return "This branch has never been pushed"
+        case .binaryConflict:
+            return "This file is not text — take one side of it whole"
         case .notFastForward:
             return "The branch has moved on both sides — merge or rebase to reconcile"
         case .localChangesWouldBeOverwritten:
@@ -187,6 +189,7 @@ final class RepoViewModel: Identifiable {
             let status = try await engine.status()
             guard !Task.isCancelled else { return }
             self.status = status
+            self.reconcileSelection(with: status)
             self.loadState = .ready
         } catch let error as GitError {
             guard !Task.isCancelled, error != .cancelled else { return }
@@ -197,6 +200,34 @@ final class RepoViewModel: Identifiable {
                 .commandFailed(command: "status", exitCode: -1, stderr: "\(error)")
             )
         }
+    }
+
+    /// Keeps ``selectedChange`` pointing at the **current** version of its file.
+    ///
+    /// It holds a snapshot, and a snapshot goes stale the moment anything is
+    /// staged, resolved or discarded. A conflicted file that has just been
+    /// resolved still reports `isConflicted` forever, which leaves the conflict
+    /// resolver on screen over a file that no longer has one.
+    private func reconcileSelection(with status: RepoStatus) {
+        guard let selection = selectedChange else { return }
+
+        guard
+            let fresh = status.changes.first(where: { $0.pathBytes == selection.change.pathBytes })
+        else {
+            // The file is clean now — committed, discarded, or resolved into
+            // exactly what HEAD already had.
+            selectedChange = nil
+            return
+        }
+
+        // Keep the side that was being looked at where it still exists, and
+        // fall to the other one where it does not.
+        var staged = selection.staged
+        if staged && !fresh.isStaged { staged = false }
+        if !staged && !fresh.isUnstaged { staged = true }
+
+        let updated = SelectedChange(change: fresh, staged: staged)
+        if updated != selection { selectedChange = updated }
     }
 
     /// Awaits whatever mutation is in flight. Used by tests.
@@ -473,6 +504,38 @@ final class RepoViewModel: Identifiable {
     /// has one.
     func reloadBranches() async {
         branches = (try? await engine.branches()) ?? []
+    }
+
+    // MARK: Conflicts
+
+    /// Whether the repository is mid-merge with nothing left to resolve, so the
+    /// only thing missing is the commit.
+    var canContinueMerge: Bool {
+        !isBusy && status.inProgress != nil && !status.hasConflicts && !status.staged.isEmpty
+    }
+
+    func conflictedContents(for change: FileChange) async throws -> String {
+        try await engine.conflictedContents(for: change)
+    }
+
+    /// Writes back what the resolver produced. The page decides what the file
+    /// should say; this is the only thing that puts it on disk.
+    func applyResolution(_ contents: String, to change: FileChange) {
+        perform { try await $0.applyResolution(contents, to: change) }
+    }
+
+    func resolve(_ change: FileChange, using side: RepoEngine.ConflictSide) {
+        perform { try await $0.resolve(change, using: side) }
+    }
+
+    /// Marks a conflict settled without changing the file — the user edited it
+    /// elsewhere, or is happy with the merge git already produced.
+    func markResolved(_ change: FileChange) {
+        stage([change])
+    }
+
+    func continueMerge() {
+        perform { try await $0.continueMerge() }
     }
 
     // MARK: Diff

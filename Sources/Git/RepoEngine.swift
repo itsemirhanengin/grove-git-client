@@ -13,6 +13,9 @@ nonisolated enum GitError: Error, Sendable, Equatable {
     /// A pull was refused rather than turned into a merge commit. The caller's
     /// next move is to offer merge or rebase, explicitly.
     case notFastForward
+    /// A conflicted file that is not text. There is nothing to merge by hand;
+    /// one side has to be taken whole.
+    case binaryConflict
     /// git refused because the operation would have overwritten uncommitted
     /// work. Not an error to hide — it is git protecting the user.
     case localChangesWouldBeOverwritten(String)
@@ -663,6 +666,91 @@ actor RepoEngine {
         case .revert: try await run(["revert", "--abort"])
         case .bisect: try await run(["bisect", "reset"])
         }
+    }
+
+    // MARK: - Conflicts
+
+    /// Which side of a conflict to take wholesale.
+    nonisolated enum ConflictSide: String, Sendable, Equatable {
+        /// The branch being merged **into** — what was here before.
+        case ours
+        /// The branch being merged **in**.
+        case theirs
+
+        var title: String {
+            switch self {
+            case .ours: "Use Ours"
+            case .theirs: "Use Theirs"
+            }
+        }
+    }
+
+    /// The conflicted file as git left it on disk — markers and all.
+    ///
+    /// Read from the working tree rather than reassembled from the three index
+    /// stages. What git wrote is what the user is looking at in their editor,
+    /// and a client that shows a different reconstruction of it is lying about
+    /// the thing it is asking them to resolve.
+    func conflictedContents(for change: FileChange) async throws -> String {
+        let url = repository.root.appending(path: change.displayPath, directoryHint: .notDirectory)
+        guard let data = try? Data(contentsOf: url) else {
+            throw GitError.commandFailed(
+                command: "read \(change.displayPath)", exitCode: -1,
+                stderr: "Could not read the conflicted file.")
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw GitError.binaryConflict
+        }
+        return text
+    }
+
+    /// Whether text still has git's conflict markers in it.
+    ///
+    /// Checked at a line start, which is the only place git writes them.
+    nonisolated static func containsConflictMarkers(_ text: String) -> Bool {
+        text.hasPrefix("<<<<<<<") || text.contains("\n<<<<<<<")
+    }
+
+    /// Writes a resolved file back, and stages it **only once nothing is left
+    /// to resolve**.
+    ///
+    /// Staging is what tells git the conflict is settled, and a merge commit
+    /// with an unstaged resolution is how one gets silently lost — but a file
+    /// with several conflict regions arrives here once per region. Staging on
+    /// the first one would settle the conflict in the index *around the
+    /// remaining markers*, which is exactly how they end up committed.
+    ///
+    /// - Returns: whether the file is now fully resolved and staged.
+    @discardableResult
+    func applyResolution(_ contents: String, to change: FileChange) async throws -> Bool {
+        let url = repository.root.appending(path: change.displayPath, directoryHint: .notDirectory)
+        do {
+            try Data(contents.utf8).write(to: url, options: .atomic)
+        } catch {
+            throw GitError.commandFailed(
+                command: "write \(change.displayPath)", exitCode: -1,
+                stderr: "\(error)")
+        }
+
+        guard !Self.containsConflictMarkers(contents) else { return false }
+        try await stage([change])
+        return true
+    }
+
+    /// Takes one side of the conflict for the whole file, then stages it.
+    func resolve(_ change: FileChange, using side: ConflictSide) async throws {
+        try await runPathspec(
+            ["checkout", "--\(side.rawValue)"], changes: [change], includeOriginalPaths: false)
+        try await stage([change])
+    }
+
+    /// Finishes a merge once nothing is conflicted any more.
+    ///
+    /// `--no-edit` takes the message git already prepared in `MERGE_MSG`. There
+    /// is no `--no-verify`: a merge commit runs the same hooks as any other, and
+    /// a merge is exactly when a pre-commit hook is worth listening to.
+    func continueMerge() async throws {
+        try await run(["commit", "--no-edit"])
     }
 
     /// The checked-out branch's short name, or ``GitError/detachedHead``.

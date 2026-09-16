@@ -217,7 +217,7 @@ struct DiffPane: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             DiffWebView(
-                payload: payload,
+                content: .diff(payload),
                 onError: { loadError = $0 },
                 onSelection: { range in
                     guard let parsed, let range else {

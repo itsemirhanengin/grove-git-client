@@ -161,7 +161,7 @@ struct DiffRenderingTests {
         let window = mount(surface, size: NSSize(width: 700, height: 320))
 
         #expect(spin(upTo: 15) { surface.isReady })
-        surface.send(payload(patch: samplePatch))
+        surface.send(.diff(payload(patch: samplePatch)))
 
         // Highlighting resolves a grammar chunk asynchronously, so settle before
         // looking.
@@ -185,7 +185,7 @@ struct DiffRenderingTests {
         let window = mount(surface, size: NSSize(width: 500, height: 200))
 
         #expect(spin(upTo: 15) { surface.isReady })
-        surface.send(payload(patch: ""))
+        surface.send(.diff(payload(patch: "")))
         spin(upTo: 2) { false }
 
         #expect(errors.isEmpty, "renderer reported: \(errors)")
@@ -216,12 +216,12 @@ struct DiffRenderingTests {
         let window = mount(surface, size: NSSize(width: 700, height: 240))
 
         #expect(spin(upTo: 15) { surface.isReady })
-        surface.send(payload(patch: hostile))
+        surface.send(.diff(payload(patch: hostile)))
         spin(upTo: 2) { false }
 
         // If the payload had escaped its argument, `window.grove` would be gone
         // and this second render would throw.
-        surface.send(payload(patch: samplePatch))
+        surface.send(.diff(payload(patch: samplePatch)))
         spin(upTo: 2) { false }
 
         let (_, painted) = snapshot(surface, named: "hostile")

@@ -1,5 +1,5 @@
 import './grove.css'
-import { FileDiff, processFile } from '@pierre/diffs'
+import { FileDiff, UnresolvedFile, processFile } from '@pierre/diffs'
 import type { FileDiffMetadata, SelectedLineRange } from '@pierre/diffs'
 
 /// What Swift sends when the selected file, the staged side, or the context
@@ -15,8 +15,21 @@ interface RenderPayload {
   generation: number
 }
 
+/// A conflicted file, sent as the working-tree text *with its conflict markers
+/// still in it*. That text is the thing git left behind and the thing the user
+/// has to resolve, so it is what the page is given.
+interface ConflictPayload {
+  fileName: string
+  contents: string
+  themeType: 'light' | 'dark'
+  fontSize: number
+  canvas: string
+  generation: number
+}
+
 interface GroveBridge {
   render(payload: string): void
+  renderConflict(payload: string): void
   setThemeType(themeType: 'light' | 'dark', canvas: string): void
   clearSelection(): void
 }
@@ -41,7 +54,25 @@ const container = document.getElementById('diff')
 if (!container) throw new Error('missing #diff container')
 
 let component: FileDiff | undefined
+let conflictComponent: UnresolvedFile | undefined
+/// Which file the live `UnresolvedFile` was built for. See `renderConflict`.
+let conflictKey: string | undefined
 let lastPayload: RenderPayload | undefined
+
+/// Only one of the two components may own the container at a time — they both
+/// create their own `<diffs-container>`, and leaving the other one mounted
+/// stacks two files on top of each other.
+function tearDownOthers(keep: 'diff' | 'conflict'): void {
+  if (keep !== 'diff' && component) {
+    component.cleanUp()
+    component = undefined
+  }
+  if (keep !== 'conflict' && conflictComponent) {
+    conflictComponent.cleanUp()
+    conflictComponent = undefined
+    conflictKey = undefined
+  }
+}
 
 /// The library styles itself from `--diffs-*` custom properties declared on
 /// `:host` inside its shadow root. Custom properties inherit *through* a shadow
@@ -77,6 +108,7 @@ function render(raw: string): void {
 
   lastPayload = payload
   applyChrome(payload)
+  tearDownOthers('diff')
 
   if (payload.patch.trim().length === 0) {
     component?.cleanUp()
@@ -163,6 +195,80 @@ function render(raw: string): void {
   send({ type: 'rendered', lines: metadata.hunks?.length ?? 0 })
 }
 
+/// The conflict resolver.
+///
+/// `UnresolvedFile` is the library's own: it parses the conflict markers, draws
+/// each region with Accept Current / Incoming / Both buttons, and hands back the
+/// **whole resolved file** when one is taken. Swift writes that to disk — the
+/// page never touches the filesystem and never decides what "resolved" means.
+function renderConflict(raw: string): void {
+  let payload: ConflictPayload
+  try {
+    payload = JSON.parse(raw) as ConflictPayload
+  } catch (error) {
+    send({ type: 'error', message: `bad conflict payload: ${String(error)}` })
+    return
+  }
+
+  applyChrome(payload)
+  tearDownOthers('conflict')
+
+  const options = {
+    disableFileHeader: true,
+    diffIndicators: 'classic' as const,
+    hunkSeparators: 'line-info' as const,
+    overflow: 'scroll' as const,
+    themeType: payload.themeType,
+    theme: {
+      light: 'github-light-default',
+      dark: 'github-dark-default',
+    },
+    // The library's own buttons, in the gutter of each conflict region. Drawing
+    // our own would mean re-deriving where every region starts, which is the
+    // one thing it has already done.
+    mergeConflictActionsType: 'default' as const,
+    onMergeConflictResolve: (file: { contents: string }) => {
+      send({ type: 'conflictResolved', contents: file.contents })
+    },
+  }
+
+  // `UnresolvedFile` parses a file exactly once and owns the resolved state
+  // from then on: re-rendering it with different contents throws
+  // *"uncontrolled unresolved files parse the file only once"*. Swift does send
+  // new contents — after a resolution is written and staged, and whenever the
+  // file is reselected — so a changed file gets a **new component** rather than
+  // a second `render` on the old one.
+  const key = `${payload.fileName}:${payload.generation}`
+  if (conflictComponent && conflictKey !== key) {
+    conflictComponent.cleanUp()
+    conflictComponent = undefined
+  }
+  conflictKey = key
+
+  if (!conflictComponent) {
+    conflictComponent = new UnresolvedFile(options)
+  } else {
+    conflictComponent.setOptions(options)
+  }
+
+  try {
+    conflictComponent.render({
+      file: {
+        name: payload.fileName,
+        contents: payload.contents,
+        cacheKey: key,
+      },
+      containerWrapper: container!,
+    })
+  } catch (error) {
+    send({ type: 'error', message: `conflict render failed: ${String(error)}` })
+    showNotice('Could not read the conflict markers in this file.')
+    return
+  }
+
+  send({ type: 'rendered', lines: 0 })
+}
+
 function setThemeType(themeType: 'light' | 'dark', canvas: string): void {
   if (lastPayload) {
     lastPayload.themeType = themeType
@@ -170,6 +276,7 @@ function setThemeType(themeType: 'light' | 'dark', canvas: string): void {
     applyChrome(lastPayload)
   }
   component?.setThemeType(themeType)
+  conflictComponent?.setThemeType(themeType)
 }
 
 /// Called after a staging operation, so the rows that were just consumed stop
@@ -178,7 +285,7 @@ function clearSelection(): void {
   component?.setSelectedLines(null, { notify: false })
 }
 
-window.grove = { render, setThemeType, clearSelection }
+window.grove = { render, renderConflict, setThemeType, clearSelection }
 
 // Swift holds its first payload until this lands: `loadFileURL` is asynchronous
 // and evaluating into the page before the module has run does nothing.

@@ -18,13 +18,17 @@ final class DiffWebSurface: NSObject {
     /// Held until the page is ready — `loadFileURL` and friends are
     /// asynchronous, and evaluating into a page whose script has not run yet
     /// silently does nothing.
-    private var pendingPayload: DiffPayload?
+    private var pendingPayload: DiffWebContent?
 
     var onError: ((String) -> Void)?
 
     /// Fires when the user finishes picking rows in the diff, and again with
     /// `nil` when they clear the pick.
     var onSelection: ((DiffRowRange?) -> Void)?
+
+    /// Fires with the **whole** resolved file each time a conflict region is
+    /// settled in the page.
+    var onConflictResolved: ((String) -> Void)?
 
     override init() {
         let configuration = WKWebViewConfiguration()
@@ -66,12 +70,12 @@ final class DiffWebSurface: NSObject {
 
     // MARK: Sending
 
-    func send(_ payload: DiffPayload) {
+    func send(_ content: DiffWebContent) {
         guard isReady else {
-            pendingPayload = payload
+            pendingPayload = content
             return
         }
-        evaluate(payload)
+        evaluate(content)
     }
 
     func setThemeType(_ theme: DiffPayload.ThemeType, canvas: String) {
@@ -95,16 +99,16 @@ final class DiffWebSurface: NSObject {
         ) { _ in }
     }
 
-    private func evaluate(_ payload: DiffPayload) {
-        guard let json = payload.jsonString else {
-            onError?("Could not encode the diff payload.")
+    private func evaluate(_ content: DiffWebContent) {
+        guard let json = content.jsonString else {
+            onError?("Could not encode the payload for the renderer.")
             return
         }
         // Passed as an argument rather than interpolated into the script, so a
-        // diff containing a quote, a backslash or `</script>` cannot break out
-        // of it. A diff is untrusted input — it is the contents of a file.
+        // file containing a quote, a backslash or `</script>` cannot break out
+        // of it. Both payloads carry the contents of a file — untrusted input.
         webView.callAsyncJavaScript(
-            "window.grove.render(payload)",
+            content.bridgeCall,
             arguments: ["payload": json], in: nil, in: .page
         ) { [weak self] result in
             if case .failure(let error) = result {
@@ -127,6 +131,8 @@ final class DiffWebSurface: NSObject {
                 pendingPayload = nil
                 evaluate(payload)
             }
+        case "conflictResolved":
+            if let contents = message["contents"] as? String { onConflictResolved?(contents) }
         case "selection":
             let range = (message["range"] as? [String: Any]).flatMap(DiffRowRange.init(json:))
             onSelection?(range)
@@ -185,11 +191,80 @@ struct DiffPayload: Encodable, Equatable {
     }
 }
 
+/// A conflicted file, sent as the working-tree text with its markers intact.
+///
+/// Mirrors `ConflictPayload` in `Web/src/main.ts`.
+struct ConflictPayload: Encodable, Equatable {
+    var fileName: String
+    var contents: String
+    var themeType: DiffPayload.ThemeType
+    var fontSize: Double
+    var canvas: String
+    var generation: Int
+}
+
+/// What the one web surface is currently showing.
+///
+/// Two payloads, one view: a conflicted file and a diff are different documents
+/// with different controls, but a second `WKWebView` would mean a second
+/// renderer load and a second 464 kB parse for a pane the user sees one of.
+enum DiffWebContent: Equatable {
+    case diff(DiffPayload)
+    case conflict(ConflictPayload)
+
+    var bridgeCall: String {
+        switch self {
+        case .diff: "window.grove.render(payload)"
+        case .conflict: "window.grove.renderConflict(payload)"
+        }
+    }
+
+    var jsonString: String? {
+        switch self {
+        case .diff(let payload): payload.jsonString
+        case .conflict(let payload):
+            (try? JSONEncoder().encode(payload)).flatMap { String(data: $0, encoding: .utf8) }
+        }
+    }
+
+    /// The appearance half of the payload, which a theme flip can update on its
+    /// own without rebuilding the document.
+    var themeType: DiffPayload.ThemeType {
+        switch self {
+        case .diff(let payload): payload.themeType
+        case .conflict(let payload): payload.themeType
+        }
+    }
+
+    var canvas: String {
+        switch self {
+        case .diff(let payload): payload.canvas
+        case .conflict(let payload): payload.canvas
+        }
+    }
+
+    /// The same content with a different appearance, for deciding whether a
+    /// change is *only* a theme change.
+    func withAppearance(of other: DiffWebContent) -> DiffWebContent {
+        switch self {
+        case .diff(var payload):
+            payload.themeType = other.themeType
+            payload.canvas = other.canvas
+            return .diff(payload)
+        case .conflict(var payload):
+            payload.themeType = other.themeType
+            payload.canvas = other.canvas
+            return .conflict(payload)
+        }
+    }
+}
+
 /// Bridges ``DiffWebSurface`` into SwiftUI.
 struct DiffWebView: NSViewRepresentable {
-    let payload: DiffPayload
+    let content: DiffWebContent
     let onError: (String) -> Void
     var onSelection: (DiffRowRange?) -> Void = { _ in }
+    var onConflictResolved: (String) -> Void = { _ in }
     /// Bumped by the owner to ask the page to drop its highlight. A counter
     /// rather than a flag, because two clears in a row are two events and a
     /// `Bool` would coalesce them into one.
@@ -201,10 +276,11 @@ struct DiffWebView: NSViewRepresentable {
         let surface = DiffWebSurface()
         surface.onError = onError
         surface.onSelection = onSelection
+        surface.onConflictResolved = onConflictResolved
         context.coordinator.surface = surface
         context.coordinator.clearedAt = clearSelectionToken
-        context.coordinator.sent = payload
-        surface.send(payload)
+        context.coordinator.sent = content
+        surface.send(content)
         return surface.webView
     }
 
@@ -212,36 +288,34 @@ struct DiffWebView: NSViewRepresentable {
         guard let surface = context.coordinator.surface else { return }
         surface.onError = onError
         surface.onSelection = onSelection
+        surface.onConflictResolved = onConflictResolved
 
         if context.coordinator.clearedAt != clearSelectionToken {
             context.coordinator.clearedAt = clearSelectionToken
             surface.clearSelection()
         }
 
-        guard context.coordinator.sent != payload else { return }
+        guard context.coordinator.sent != content else { return }
 
         // A theme flip alone does not need the document rebuilt, and rebuilding
         // it would throw away the scroll position mid-appearance-change.
-        if var previous = context.coordinator.sent,
-            previous.themeType != payload.themeType
+        if let previous = context.coordinator.sent,
+            previous.themeType != content.themeType,
+            previous.withAppearance(of: content) == content
         {
-            previous.themeType = payload.themeType
-            previous.canvas = payload.canvas
-            if previous == payload {
-                context.coordinator.sent = payload
-                surface.setThemeType(payload.themeType, canvas: payload.canvas)
-                return
-            }
+            context.coordinator.sent = content
+            surface.setThemeType(content.themeType, canvas: content.canvas)
+            return
         }
 
-        context.coordinator.sent = payload
-        surface.send(payload)
+        context.coordinator.sent = content
+        surface.send(content)
     }
 
     @MainActor
     final class Coordinator {
         var surface: DiffWebSurface?
-        var sent: DiffPayload?
+        var sent: DiffWebContent?
         var clearedAt = 0
     }
 }

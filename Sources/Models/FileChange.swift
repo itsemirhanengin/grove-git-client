@@ -168,6 +168,10 @@ nonisolated struct RepoStatus: Sendable, Equatable {
 
     var changes: [FileChange] = []
 
+    /// A merge, rebase, cherry-pick or revert the repository is in the middle
+    /// of. Detected from marker files, so it costs no extra process.
+    var inProgress: InProgressOperation?
+
     /// A repository with no commits. `rev-parse HEAD` fails here, so anything
     /// that diffs against HEAD needs a different path — diffing against the
     /// empty tree instead.

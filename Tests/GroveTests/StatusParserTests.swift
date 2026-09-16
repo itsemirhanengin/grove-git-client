@@ -286,6 +286,37 @@ struct StatusParserTests {
         #expect(status.dirtyCount == 0)
     }
 
+    /// The invariant that keeps a change from becoming invisible in the UI.
+    ///
+    /// A conflicted path is neither staged nor an ordinary unstaged change, so a
+    /// view that renders only `staged` and `unstaged` silently drops the one
+    /// file that actually blocks the user. Asserting full coverage here catches
+    /// that without needing to look at the screen.
+    @Test("every change lands in at least one display group")
+    func everyChangeIsVisible() {
+        let status = StatusParser.parse(
+            records([
+                "1 M. N... 100644 100644 100644 \(oid) \(oid) staged-only.txt",
+                "1 .M N... 100644 100644 100644 \(oid) \(oid) unstaged-only.txt",
+                "1 MM N... 100644 100644 100644 \(oid) \(oid) both.txt",
+                "2 R. N... 100644 100644 100644 \(oid) \(oid) R100 renamed.txt",
+                "old-name.txt",
+                "u UU N... 100644 100644 100644 100644 \(oid) \(oid) \(oid) conflict.txt",
+                "? untracked.txt",
+            ])
+        )
+
+        let grouped = Set(
+            (status.staged + status.unstaged + status.untracked + status.conflicted)
+                .map(\.displayPath)
+        )
+        let all = Set(status.changes.map(\.displayPath))
+
+        #expect(grouped == all, "ungrouped: \(all.subtracting(grouped))")
+        #expect(status.conflicted.map(\.displayPath) == ["conflict.txt"])
+        #expect(status.dirtyCount == 6)
+    }
+
     @Test("collapses control characters for single-line display")
     func singleLineSanitization() {
         // Newlines and tabs are legal in macOS filenames; a fixed-height row

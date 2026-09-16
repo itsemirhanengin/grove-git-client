@@ -4,7 +4,11 @@ import Foundation
 ///
 /// A repo is identified by its resolved toplevel path, so it survives a rescan
 /// without needing a stored id.
-struct RepoID: Hashable, Sendable {
+///
+/// `nonisolated` because the git layer — which runs off the main actor — uses it
+/// as an identity. Leaving it main-actor-isolated makes every `Identifiable`
+/// conformance in that layer a data-race error.
+nonisolated struct RepoID: Hashable, Sendable {
     let path: String
 }
 
@@ -12,7 +16,7 @@ struct RepoID: Hashable, Sendable {
 ///
 /// `pullRequests` and `branchesReview` are deliberately absent: they need
 /// GitHub/GitLab API integration and OAuth, which is a separate project.
-enum RepoSection: String, Hashable, Sendable, CaseIterable, Identifiable {
+nonisolated enum RepoSection: String, Hashable, Sendable, CaseIterable, Identifiable {
     case workingCopy
     case history
     case stashes
@@ -44,7 +48,7 @@ enum RepoSection: String, Hashable, Sendable, CaseIterable, Identifiable {
 ///
 /// `overview` is Grove's addition to Tower's model: the all-repos-at-once view
 /// that the workspace idea exists for in the first place.
-enum SidebarSelection: Hashable, Sendable {
+nonisolated enum SidebarSelection: Hashable, Sendable {
     case overview
     case repo(RepoID, RepoSection)
 }

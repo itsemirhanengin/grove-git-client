@@ -327,4 +327,61 @@ actor RepoEngine {
         if exists("BISECT_LOG") { return .bisect }
         return nil
     }
+
+    // MARK: - Diff
+
+    /// One file's diff, as git's own `diff --git` output.
+    ///
+    /// Handed on verbatim rather than parsed. The renderer understands git's
+    /// format — including the rename, mode and `index` lines — so re-deriving
+    /// it in Swift would only add a second thing that can disagree with git.
+    ///
+    /// A parser returns here in phase 10, where turning a *subset* of lines into
+    /// a patch that `git apply` accepts genuinely needs one.
+    func diff(
+        for change: FileChange,
+        staged: Bool,
+        contextLines: Int = 3
+    ) async throws -> String {
+        let path = change.displayPath
+
+        // An untracked file is not in the index, so `git diff` has nothing to
+        // compare. `--no-index` diffs it against /dev/null, and exits 1 by
+        // design when the files differ — which is always, here.
+        if change.kind == .untracked {
+            let arguments = [
+                "diff", "--no-index", "--no-color", "--no-ext-diff",
+                "-U\(contextLines)", "--", "/dev/null", path,
+            ]
+            let result = try await limiter.withSlot {
+                try await runner.read(arguments, in: repository.root, outputByteLimit: 256 << 20)
+            }
+            // Exit 1 means "they differ", not failure.
+            guard result.exitCode <= 1 else {
+                throw GitError.classify(result, command: arguments)
+            }
+            return String(decoding: result.stdout, as: UTF8.self)
+        }
+
+        // A rename must be diffed against its original path too, or git reports
+        // an empty diff for the new name.
+        let paths = [path] + (change.originalDisplayPath.map { [$0] } ?? [])
+        let arguments =
+            [
+                "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                "--find-renames", "--diff-algorithm=histogram", "-U\(contextLines)",
+            ]
+            + (staged ? ["--cached"] : [])
+            + ["--"] + paths
+
+        let result = try await limiter.withSlot {
+            try await runner.read(
+                arguments, in: repository.root, timeout: .seconds(60),
+                outputByteLimit: 256 << 20)
+        }
+        guard result.exitCode == 0 else {
+            throw GitError.classify(result, command: arguments)
+        }
+        return String(decoding: result.stdout, as: UTF8.self)
+    }
 }

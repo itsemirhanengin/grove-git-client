@@ -22,13 +22,25 @@ struct RootView: View {
                 )
         } content: {
             ListColumn(model: model, selection: selection)
+                // The scope bar filters *this* column, so it lives here rather
+                // than in `.accessoryBar`. An accessory bar spans the whole
+                // window, which meant the detail column carried 32pt of empty
+                // strip above the file name for a control it does not own.
+                .safeAreaBar(edge: .top, spacing: 0) {
+                    if let workspace = model.workspace {
+                        RepoScopeBar(workspace: workspace)
+                            .padding(.horizontal, Space.lg)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.bar)
+                    }
+                }
                 .navigationSplitViewColumnWidth(
                     min: Metrics.listMinWidth,
                     ideal: Metrics.listIdealWidth,
                     max: Metrics.listMaxWidth
                 )
         } detail: {
-            DetailColumn()
+            DetailColumn(model: model, selection: selection)
                 // Fill the column, or `safeAreaBar` attaches to the intrinsic
                 // height of the empty state and the bar floats mid-pane.
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -68,11 +80,6 @@ struct RootView: View {
                 .disabled(model.workspace == nil)
             }
 
-            if let workspace = model.workspace {
-                ToolbarItem(placement: .accessoryBar(id: "scope")) {
-                    RepoScopeBar(workspace: workspace)
-                }
-            }
         }
         .searchable(
             text: filterBinding,
@@ -374,12 +381,24 @@ private struct WorkspaceOverview: View {
 }
 
 private struct DetailColumn: View {
+    let model: AppModel
+    let selection: SidebarSelection?
+
     var body: some View {
-        ContentUnavailableView(
-            "No File Selected",
-            systemImage: "doc.text",
-            description: Text("Select a changed file to view its diff.")
-        )
+        if let repo = focusedRepo, let selected = repo.selectedChange {
+            DiffPane(repo: repo, selection: selected)
+        } else {
+            ContentUnavailableView(
+                "No File Selected",
+                systemImage: "doc.text",
+                description: Text("Select a changed file to view its diff.")
+            )
+        }
+    }
+
+    private var focusedRepo: RepoViewModel? {
+        guard case .repo(let id, _) = selection else { return nil }
+        return model.workspace?.repos.first { $0.id == id }
     }
 }
 

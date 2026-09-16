@@ -46,28 +46,37 @@ nonisolated struct Swatch: Sendable, Equatable {
         Color(nsColor: NSColor(hex: hex(for: appearance)))
     }
 
+    /// `#rrggbb` for one colour scheme.
+    ///
+    /// For handing a colour to something that is neither AppKit nor SwiftUI and
+    /// therefore cannot resolve a dynamic colour itself — the diff renderer's
+    /// web page, which has to match the window it sits in.
+    func hexString(for scheme: ColorScheme) -> String {
+        String(format: "#%06X", hex(for: scheme == .dark ? .dark : .light))
+    }
+
     /// The live colour, which re-resolves itself as the appearance changes.
     ///
     /// `bestMatch(from:)` is what makes Increase Contrast work: the resolving
     /// appearance reports which of the four named appearances it is closest to.
-    @MainActor var color: Color {
-        Color(
-            nsColor: NSColor(name: nil) { appearance in
-                let match = appearance.bestMatch(from: [
-                    .aqua, .darkAqua,
-                    .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
-                ])
-                let variant: Appearance =
-                    switch match {
-                    case .some(.accessibilityHighContrastDarkAqua): .darkHighContrast
-                    case .some(.accessibilityHighContrastAqua): .lightHighContrast
-                    case .some(.darkAqua): .dark
-                    default: .light
-                    }
-                return NSColor(hex: self.hex(for: variant))
-            }
-        )
+    @MainActor var nsColor: NSColor {
+        NSColor(name: nil) { appearance in
+            let match = appearance.bestMatch(from: [
+                .aqua, .darkAqua,
+                .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
+            ])
+            let variant: Appearance =
+                switch match {
+                case .some(.accessibilityHighContrastDarkAqua): .darkHighContrast
+                case .some(.accessibilityHighContrastAqua): .lightHighContrast
+                case .some(.darkAqua): .dark
+                default: .light
+                }
+            return NSColor(hex: self.hex(for: variant))
+        }
     }
+
+    @MainActor var color: Color { Color(nsColor: nsColor) }
 }
 
 /// Grove's semantic colours.

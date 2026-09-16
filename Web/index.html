@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Grove Diff</title>
+    <!-- Inline, and before anything else: this is the only style that exists
+         during the first paint, and without it the pane is white for as long as
+         the stylesheet takes to arrive. `light-dark()` picks the right one from
+         the system appearance; Swift overwrites both with Grove's own canvas
+         the moment it sends a payload. -->
+    <style>
+      :root {
+        color-scheme: light dark;
+        --grove-canvas: light-dark(#ffffff, #0d1117);
+      }
+      html,
+      body {
+        margin: 0;
+        background: var(--grove-canvas);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="diff"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

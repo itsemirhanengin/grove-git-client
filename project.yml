@@ -51,6 +51,13 @@ targets:
     platform: macOS
     sources:
       - path: Sources
+      # The diff renderer, built by `npm --prefix Web run build`. A folder
+      # reference — its ~320 lazy-loaded syntax grammars must keep their paths,
+      # and a group would flatten them into the bundle root.
+      - path: Web/DiffRenderer
+
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: DiffCore
         product: DiffCore

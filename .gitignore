@@ -17,4 +17,8 @@ xcuserdata/
 .vite/
 node_modules/
 
+# The diff renderer is built by scripts/web.sh into the app bundle. Its output
+# is ~11 MB of generated syntax grammars, so it is built rather than committed.
+Web/DiffRenderer/
+
 .DS_Store

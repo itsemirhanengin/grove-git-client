@@ -33,6 +33,13 @@ final class RepoViewModel: Identifiable {
     var branches: [BranchInfo] = []
     var loadState: RepoLoadState = .idle
 
+    /// The change whose diff the detail column is showing.
+    ///
+    /// Held on the repository rather than threaded through the column views as
+    /// a binding: the detail column, the change list and the diff pane all need
+    /// it, and `@Observable` invalidates only the views that actually read it.
+    var selectedChange: SelectedChange?
+
     /// The user's explicit expand/collapse choice, or `nil` while it is still
     /// whatever the workspace decided by default.
     ///
@@ -298,4 +305,20 @@ final class RepoViewModel: Identifiable {
             await self.performRefresh()
         }
     }
+
+    // MARK: Diff
+
+    /// One file's diff, as git's own output. See ``RepoEngine/diff(for:staged:contextLines:)``.
+    func diff(for change: FileChange, staged: Bool, contextLines: Int = 3) async throws -> String {
+        try await engine.diff(for: change, staged: staged, contextLines: contextLines)
+    }
+}
+
+/// A file plus which side of it is being shown.
+///
+/// A file can be staged *and* modified again, and those are two different
+/// diffs, so the side is part of the selection rather than a display toggle.
+nonisolated struct SelectedChange: Sendable, Equatable {
+    var change: FileChange
+    var staged: Bool
 }

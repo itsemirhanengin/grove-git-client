@@ -238,7 +238,13 @@ private struct ChangeList: View {
                         // Staged rows offer no discard: unstaging is the
                         // reversible step, and discarding from here would throw
                         // away work in one click.
-                        onDiscard: staged ? nil : { repo.requestDiscard([change]) }
+                        onDiscard: staged ? nil : { repo.requestDiscard([change]) },
+                        isSelected: repo.selectedChange
+                            == SelectedChange(change: change, staged: staged),
+                        onSelect: {
+                            repo.selectedChange = SelectedChange(
+                                change: change, staged: staged)
+                        }
                     )
                     .padding(.horizontal, Space.lg)
                 }

@@ -129,6 +129,9 @@ struct ChangeRow: View {
     let staged: Bool
     var onStage: (() -> Void)?
     var onDiscard: (() -> Void)?
+    /// Whether this row's diff is the one on screen.
+    var isSelected = false
+    var onSelect: (() -> Void)?
 
     /// Hover state is **local to the row** on purpose. Hoisting it into a
     /// list-level `hoveredID` invalidates every row on every mouse move, which
@@ -176,9 +179,17 @@ struct ChangeRow: View {
             trailingSlot
         }
         .frame(height: Metrics.fileRow)
+        .padding(.horizontal, Space.xs)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: Radius.sm)
+                    .fill(.selection)
+            }
+        }
         .contentShape(.rect)
         .opacity(change.worktreeStatus == .deleted && !staged ? 0.6 : 1)
         .onHover { isHovered = $0 }
+        .onTapGesture { onSelect?() }
         .help(change.singleLineDisplayPath)
     }
 

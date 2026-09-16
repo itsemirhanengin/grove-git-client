@@ -6,6 +6,11 @@ source "${0:A:h}/env.sh"
 CONFIG="${1:-Debug}"
 
 cd "$ROOT"
+
+# The diff renderer is a bundle resource, so it has to exist before xcodegen
+# writes the project — an absent folder reference is a build failure.
+"${0:A:h}/web.sh" || exit 1
+
 xcodegen generate --quiet
 
 set +e

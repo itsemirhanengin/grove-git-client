@@ -1,0 +1,35 @@
+/* The page is a viewport onto one diff and nothing else: no page chrome, no
+   margins, no bounce. Everything above and below the diff is real AppKit. */
+
+/* `--grove-canvas` and `color-scheme` are declared inline in index.html so the
+   first paint is already the right colour. Redeclaring them here would reset
+   that to white for the moment before Swift sends its first payload. */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--grove-canvas);
+  /* Rubber-banding past the end of a diff reads as a bug inside a native
+     window, where no other pane does it. */
+  overscroll-behavior: none;
+}
+
+#diff {
+  min-height: 100%;
+}
+
+/* The library's own element. It carries its own shadow root and stylesheet;
+   all this has to do is let it fill the pane. */
+diffs-container {
+  display: block;
+  width: 100%;
+}
+
+.grove-notice {
+  margin: 0;
+  padding: 16px;
+  font: message-box;
+  color: color-mix(in srgb, currentColor 55%, transparent);
+}

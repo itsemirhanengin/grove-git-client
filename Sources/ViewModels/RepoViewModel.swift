@@ -124,6 +124,12 @@ final class RepoViewModel: Identifiable {
         case .authenticationRequired: return "Authentication required"
         case .networkUnreachable: return "Network unreachable"
         case .unbornBranch: return "No commits yet"
+        case .detachedHead: return "HEAD is detached — switch to a branch first"
+        case .noUpstream: return "This branch has never been pushed"
+        case .notFastForward:
+            return "The branch has moved on both sides — merge or rebase to reconcile"
+        case .localChangesWouldBeOverwritten:
+            return "Uncommitted changes are in the way — commit or discard them first"
         case .emptyCommitMessage: return "Write a commit message first"
         case .nothingToCommit: return "Nothing staged to commit"
         case .timedOut: return "git timed out"
@@ -383,6 +389,90 @@ final class RepoViewModel: Identifiable {
             }
             await self.performRefresh()
         }
+    }
+
+    // MARK: Remotes and branches
+
+    /// Whether pushing would have to publish the branch rather than update it.
+    var needsUpstream: Bool { status.upstream == nil && !status.isUnborn }
+
+    var canPush: Bool { !isBusy && (status.ahead > 0 || needsUpstream) }
+    var canPull: Bool { !isBusy && status.behind > 0 }
+
+    func fetch() {
+        perform { try await $0.fetch() }
+    }
+
+    /// Defaults to fast-forward only. When that is refused the error says so,
+    /// and the UI offers merge or rebase as a separate, named choice — rather
+    /// than quietly producing a merge commit nobody asked for.
+    func pull(_ strategy: RepoEngine.PullStrategy = .fastForwardOnly) {
+        perform { try await $0.pull(strategy) }
+    }
+
+    func push() {
+        let publish = needsUpstream
+        perform { try await $0.push(setUpstream: publish) }
+    }
+
+    func switchTo(_ branch: BranchInfo) {
+        perform { engine in
+            try await engine.switchTo(branch)
+        } onSuccess: { [weak self] in
+            // The branch list's ahead/behind and current marker are all stale
+            // the moment HEAD moves.
+            self?.branches = []
+        }
+    }
+
+    func createBranch(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        perform { engine in
+            try await engine.createBranch(named: trimmed)
+        } onSuccess: { [weak self] in
+            self?.branches = []
+        }
+    }
+
+    /// The result of the last merge, so the UI can say what happened instead of
+    /// leaving the user to infer it from the file list.
+    struct MergeReceipt: Identifiable {
+        let id = UUID()
+        let branch: String
+        let outcome: RepoEngine.MergeOutcome
+    }
+
+    var lastMerge: MergeReceipt?
+
+    func merge(_ branch: BranchInfo) {
+        currentOperation = Task { [weak self] in
+            guard let self else { return }
+            self.isBusy = true
+            defer { self.isBusy = false }
+            do {
+                let outcome = try await self.engine.merge(branch)
+                self.lastMerge = MergeReceipt(branch: branch.name, outcome: outcome)
+                self.branches = []
+            } catch let error as GitError {
+                self.operationError = error
+            } catch {
+                self.operationError = .commandFailed(
+                    command: "merge", exitCode: -1, stderr: "\(error)")
+            }
+            await self.performRefresh()
+        }
+    }
+
+    func abortInProgress() {
+        guard let operation = status.inProgress else { return }
+        perform { try await $0.abort(operation) }
+    }
+
+    /// Reloads the branch list, which `loadBranchesIfNeeded` will not do once it
+    /// has one.
+    func reloadBranches() async {
+        branches = (try? await engine.branches()) ?? []
     }
 
     // MARK: Diff

@@ -111,3 +111,78 @@ struct GlobalActionBar: View {
         }
     }
 }
+
+/// Fetch, pull and push for the repository the list column is showing.
+///
+/// These live in a bar over the file list rather than in the window toolbar:
+/// the toolbar is workspace-scoped — open a folder, refresh everything — and a
+/// button whose target silently changes with the sidebar selection is how a
+/// client pushes the wrong branch.
+struct RepoActionBar: View {
+    let repo: RepoViewModel
+
+    var body: some View {
+        HStack(spacing: Space.md) {
+            BranchPill(label: repo.branchLabel, isDetached: repo.isDetached)
+            AheadBehindBadge(ahead: repo.status.ahead, behind: repo.status.behind)
+
+            if let operation = repo.status.inProgress {
+                Text(operation.label)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Palette.attention.color)
+
+                Button("Abort") { repo.abortInProgress() }
+                    .font(Typography.secondaryDetail)
+                    .disabled(repo.isBusy)
+            }
+
+            Spacer(minLength: Space.md)
+
+            if repo.isBusy {
+                ProgressView().controlSize(.mini)
+            }
+
+            Button("Fetch", systemImage: "arrow.down.circle") { repo.fetch() }
+                .labelStyle(.iconOnly)
+                .help("Fetch all remotes")
+                .disabled(repo.isBusy)
+
+            // A menu with a primary action: clicking pulls fast-forward only,
+            // holding offers the two ways of reconciling a branch that has
+            // moved on both sides. Neither happens by accident.
+            Menu {
+                Button(RepoEngine.PullStrategy.merge.title) { repo.pull(.merge) }
+                Button(RepoEngine.PullStrategy.rebase.title) { repo.pull(.rebase) }
+            } label: {
+                Label(pullTitle, systemImage: "arrow.down")
+            } primaryAction: {
+                repo.pull(.fastForwardOnly)
+            }
+            .menuStyle(.button)
+            .fixedSize()
+            .disabled(!repo.canPull && repo.status.behind == 0 && repo.isBusy)
+            .help("Pull from the upstream branch")
+
+            Button(pushTitle, systemImage: "arrow.up") { repo.push() }
+                .fixedSize()
+                .disabled(!repo.canPush)
+                .help(repo.needsUpstream ? "Push and set the upstream branch" : "Push to upstream")
+        }
+        .font(Typography.secondaryDetail)
+        .padding(.horizontal, Space.lg)
+        .frame(height: Metrics.accessoryBar)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.bar)
+    }
+
+    private var pullTitle: String {
+        repo.status.behind > 0 ? "Pull \(repo.status.behind)" : "Pull"
+    }
+
+    /// "Publish" rather than "Push" when there is no upstream, because that is
+    /// a different act: it decides where a branch lives, once.
+    private var pushTitle: String {
+        if repo.needsUpstream { return "Publish" }
+        return repo.status.ahead > 0 ? "Push \(repo.status.ahead)" : "Push"
+    }
+}

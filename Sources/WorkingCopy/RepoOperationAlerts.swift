@@ -35,14 +35,60 @@ struct RepoOperationAlerts: ViewModifier {
                 Text(receiptMessage(for: receipt.outcome))
             }
             .alert(
-                "Operation failed",
+                "Merged",
+                isPresented: mergePresented,
+                presenting: repo?.lastMerge
+            ) { _ in
+                Button("OK") { repo?.lastMerge = nil }
+            } message: { receipt in
+                Text(mergeMessage(for: receipt))
+            }
+            .alert(
+                errorTitle,
                 isPresented: errorPresented,
                 presenting: repo?.operationError
-            ) { _ in
-                Button("OK") { repo?.operationError = nil }
+            ) { error in
+                // A refused fast-forward is not a dead end — it is a question.
+                // Offering the two answers here is the whole reason `pull`
+                // defaults to `--ff-only` rather than guessing.
+                if case .notFastForward = error {
+                    Button(RepoEngine.PullStrategy.merge.title) {
+                        repo?.operationError = nil
+                        repo?.pull(.merge)
+                    }
+                    Button(RepoEngine.PullStrategy.rebase.title) {
+                        repo?.operationError = nil
+                        repo?.pull(.rebase)
+                    }
+                    Button("Cancel", role: .cancel) { repo?.operationError = nil }
+                } else {
+                    Button("OK") { repo?.operationError = nil }
+                }
             } message: { error in
                 Text(message(for: error))
             }
+    }
+
+    private var errorTitle: String {
+        if case .notFastForward = repo?.operationError { return "The branch has diverged" }
+        return "Operation failed"
+    }
+
+    private func mergeMessage(for receipt: RepoViewModel.MergeReceipt) -> String {
+        switch receipt.outcome {
+        case .alreadyUpToDate:
+            return "\(receipt.branch) is already in this branch. Nothing changed."
+        case .fastForward:
+            return "Fast-forwarded to \(receipt.branch). No merge commit was needed."
+        case .merged:
+            return "Merged \(receipt.branch)."
+        case .conflicted:
+            return """
+                Merging \(receipt.branch) left conflicts. The conflicted files are \
+                listed under Conflicts; resolve them and commit, or abort the merge \
+                from the bar above the list.
+                """
+        }
     }
 
     // MARK: Confirmation wording
@@ -140,6 +186,10 @@ struct RepoOperationAlerts: ViewModifier {
 
     private var receiptPresented: Binding<Bool> {
         Binding(get: { repo?.lastDiscard != nil }, set: { if !$0 { repo?.lastDiscard = nil } })
+    }
+
+    private var mergePresented: Binding<Bool> {
+        Binding(get: { repo?.lastMerge != nil }, set: { if !$0 { repo?.lastMerge = nil } })
     }
 
     private var errorPresented: Binding<Bool> {

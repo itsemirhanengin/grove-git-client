@@ -6,6 +6,16 @@ nonisolated enum GitError: Error, Sendable, Equatable {
     case authenticationRequired(String)
     case networkUnreachable(String)
     case unbornBranch
+    /// HEAD is not on a branch, so there is nothing to push or pull.
+    case detachedHead
+    /// The branch has no upstream — it has never been pushed.
+    case noUpstream
+    /// A pull was refused rather than turned into a merge commit. The caller's
+    /// next move is to offer merge or rebase, explicitly.
+    case notFastForward
+    /// git refused because the operation would have overwritten uncommitted
+    /// work. Not an error to hide — it is git protecting the user.
+    case localChangesWouldBeOverwritten(String)
     case emptyCommitMessage
     case nothingToCommit
     case timedOut
@@ -46,6 +56,26 @@ nonisolated enum GitError: Error, Sendable, Equatable {
         }
         if stderr.contains("patch does not apply") || stderr.contains("patch failed") {
             return .patchDoesNotApply(stderr)
+        }
+        if stderr.contains("local changes")
+            || stderr.contains("would be overwritten")
+            || stderr.contains("Please commit your changes or stash them")
+        {
+            return .localChangesWouldBeOverwritten(stderr)
+        }
+        if stderr.contains("Not possible to fast-forward")
+            || stderr.contains("Need to specify how to reconcile divergent branches")
+            || stderr.contains("not possible to fast-forward")
+        {
+            return .notFastForward
+        }
+        if stderr.contains("has no upstream branch")
+            || stderr.contains("no tracking information")
+        {
+            return .noUpstream
+        }
+        if stderr.contains("not a symbolic ref") || stderr.contains("HEAD is detached") {
+            return .detachedHead
         }
 
         return .commandFailed(
@@ -465,6 +495,195 @@ actor RepoEngine {
         try await runApply(patch, operation: operation, check: false)
 
         return backupRef
+    }
+
+    // MARK: - Remotes
+
+    /// How a pull reconciles a branch that has moved on both sides.
+    ///
+    /// There is no "just pull" here. `git pull` with no strategy silently picks
+    /// one from config — and in a repository where that is unset it invents a
+    /// merge commit nobody asked for. Grove asks instead.
+    nonisolated enum PullStrategy: String, Sendable, CaseIterable, Identifiable {
+        /// Refuses if the branches have diverged. The default, and the only one
+        /// that cannot produce a commit the user did not intend.
+        case fastForwardOnly
+        case merge
+        case rebase
+
+        nonisolated var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .fastForwardOnly: "Pull"
+            case .merge: "Pull and Merge"
+            case .rebase: "Pull and Rebase"
+            }
+        }
+
+        fileprivate var arguments: [String] {
+            switch self {
+            case .fastForwardOnly: ["pull", "--ff-only"]
+            // `--no-edit` on both: without it git opens an editor for the merge
+            // message, and there is no terminal here for it to open in.
+            case .merge: ["pull", "--no-rebase", "--no-edit"]
+            case .rebase: ["pull", "--rebase"]
+            }
+        }
+    }
+
+    /// Network operations get a far longer leash than local ones — a fetch over
+    /// a slow link is not a hang.
+    private static let networkTimeout: Duration = .seconds(300)
+
+    func fetch() async throws {
+        let arguments = ["fetch", "--all", "--prune"]
+        let result = try await limiter.withSlot {
+            try await runner.write(arguments, in: repository.root, timeout: Self.networkTimeout)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
+    }
+
+    func pull(_ strategy: PullStrategy) async throws {
+        // A pull rewrites the working tree, so it gets the same snapshot every
+        // other operation that can does. On a clean tree this costs nothing —
+        // `git stash create` returns empty and no ref is written.
+        try? await createBackup(reason: "pull")
+
+        let arguments = strategy.arguments
+        let result = try await limiter.withSlot {
+            try await runner.write(arguments, in: repository.root, timeout: Self.networkTimeout)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
+    }
+
+    /// Pushes the current branch.
+    ///
+    /// There is **no force here, of any kind** — not even `--force-with-lease`.
+    /// Overwriting a remote branch is the one git operation that can destroy
+    /// someone else's work as well as your own, and it needs its own deliberate
+    /// action rather than a flag on this one.
+    ///
+    /// - Parameter setUpstream: publish a branch that has never been pushed.
+    ///   The caller decides, because "where does this go" is a choice and
+    ///   guessing it silently is how a private branch ends up on a shared remote.
+    func push(setUpstream: Bool, remote: String = "origin") async throws {
+        var built = ["push"]
+        if setUpstream {
+            built += ["--set-upstream", remote, try await currentBranchName()]
+        }
+        let arguments = built
+
+        let result = try await limiter.withSlot {
+            try await runner.write(arguments, in: repository.root, timeout: Self.networkTimeout)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
+    }
+
+    // MARK: - Branches
+
+    /// What a merge actually did, so the UI can say so rather than just stopping.
+    nonisolated enum MergeOutcome: Sendable, Equatable {
+        case alreadyUpToDate
+        case fastForward
+        case merged
+        /// Not a failure — a state. `MERGE_HEAD` is now present and the
+        /// conflicted paths are in `status`.
+        case conflicted
+    }
+
+    /// Switches to a branch.
+    ///
+    /// `git switch`, not `git checkout`: `checkout` will happily detach HEAD at
+    /// a ref that turns out not to be a branch, and a client that does that by
+    /// accident loses the user's commits.
+    func switchTo(_ branch: BranchInfo) async throws {
+        if branch.isRemote {
+            // `--track origin/x` creates a local `x` following it. If `x`
+            // already exists that fails, and switching to the local one is what
+            // was meant anyway.
+            let tracking = ["switch", "--track", branch.name]
+            let attempt = try await limiter.withSlot {
+                try await runner.write(tracking, in: repository.root)
+            }
+            if attempt.didSucceed { return }
+
+            let short = branch.name.split(separator: "/").dropFirst().joined(separator: "/")
+            guard !short.isEmpty else { throw GitError.classify(attempt, command: tracking) }
+            try await run(["switch", short])
+            return
+        }
+
+        try await run(["switch", branch.name])
+    }
+
+    /// Creates a branch, and by default moves to it.
+    func createBranch(
+        named name: String, from startPoint: String? = nil, checkout: Bool = true
+    )
+        async throws
+    {
+        var built = checkout ? ["switch", "--create", name] : ["branch", name]
+        if let startPoint { built.append(startPoint) }
+        try await run(built)
+    }
+
+    /// Merges a branch into the current one.
+    ///
+    /// A conflict comes back as ``MergeOutcome/conflicted`` rather than an
+    /// error: the repository is now in a legitimate state that the user has to
+    /// resolve, and reporting it as a failure invites the UI to roll it back.
+    func merge(_ branch: BranchInfo) async throws -> MergeOutcome {
+        try? await createBackup(reason: "merge")
+
+        let arguments = ["merge", "--no-edit", branch.name]
+        let result = try await limiter.withSlot {
+            try await runner.write(arguments, in: repository.root, timeout: .seconds(120))
+        }
+
+        let output = result.stdoutText + result.stderrText
+        if result.didSucceed {
+            if output.contains("Already up to date") { return .alreadyUpToDate }
+            if output.contains("Fast-forward") { return .fastForward }
+            return .merged
+        }
+
+        if output.contains("CONFLICT") || output.contains("Automatic merge failed") {
+            return .conflicted
+        }
+        throw GitError.classify(result, command: arguments)
+    }
+
+    /// Backs out of a merge, rebase, cherry-pick, revert or bisect.
+    func abort(_ operation: InProgressOperation) async throws {
+        switch operation {
+        case .merge: try await run(["merge", "--abort"])
+        case .rebase: try await run(["rebase", "--abort"])
+        case .cherryPick: try await run(["cherry-pick", "--abort"])
+        case .revert: try await run(["revert", "--abort"])
+        case .bisect: try await run(["bisect", "reset"])
+        }
+    }
+
+    /// The checked-out branch's short name, or ``GitError/detachedHead``.
+    private func currentBranchName() async throws -> String {
+        let arguments = ["symbolic-ref", "--quiet", "--short", "HEAD"]
+        let result = try await limiter.withSlot {
+            try await runner.read(arguments, in: repository.root)
+        }
+        guard result.didSucceed else { throw GitError.detachedHead }
+
+        let name = result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw GitError.detachedHead }
+        return name
+    }
+
+    /// Runs a local mutation and turns a non-zero exit into a `GitError`.
+    private func run(_ arguments: [String]) async throws {
+        let result = try await limiter.withSlot {
+            try await runner.write(arguments, in: repository.root)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
     }
 
     private func runApply(

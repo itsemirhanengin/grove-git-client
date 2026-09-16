@@ -61,6 +61,10 @@ nonisolated struct ProcessResult: Sendable {
     /// stderr decoded for display and error matching. Lossy on purpose: it must
     /// never fail, and `LC_ALL=C` keeps the text ASCII anyway.
     var stderrText: String { String(decoding: stderr, as: UTF8.self) }
+
+    /// stdout decoded the same way. Git reports the shape of a merge — "Already
+    /// up to date", "Fast-forward", "CONFLICT" — on stdout, not stderr.
+    var stdoutText: String { String(decoding: stdout, as: UTF8.self) }
 }
 
 nonisolated enum ProcessRunnerError: Error, Sendable {

@@ -14,6 +14,12 @@ struct RootView: View {
     @State private var selection: SidebarSelection? = .overview
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
+    /// The repository the sidebar points at, or `nil` in the Overview.
+    private var selectedRepo: RepoViewModel? {
+        guard case .repo(let id, _) = selection else { return nil }
+        return model.workspace?.repos.first { $0.id == id }
+    }
+
     /// Which repository's diff the column shows.
     ///
     /// In a repository section it is whatever the sidebar points at. In the
@@ -44,7 +50,14 @@ struct RootView: View {
                 // window, which meant the detail column carried 32pt of empty
                 // strip above the file name for a control it does not own.
                 .safeAreaBar(edge: .top, spacing: 0) {
-                    if let workspace = model.workspace {
+                    // The bar describes whatever the column below it holds: the
+                    // scope filter for the all-repositories Overview, and fetch
+                    // / pull / push for a single repository. A network button
+                    // whose target changes with the sidebar selection is how a
+                    // client pushes the wrong branch.
+                    if let repo = selectedRepo {
+                        RepoActionBar(repo: repo)
+                    } else if let workspace = model.workspace {
                         RepoScopeBar(workspace: workspace)
                             .padding(.horizontal, Space.lg)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -320,6 +333,8 @@ private struct ListColumn: View {
                 switch section {
                 case .workingCopy:
                     WorkingCopyPane(repo: repo, workspace: workspace)
+                case .branches:
+                    BranchesPane(repo: repo)
                 default:
                     ContentUnavailableView(
                         section.title,

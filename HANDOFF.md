@@ -3,7 +3,7 @@
 Native macOS 27 multi-repo git client, SwiftUI. Written for picking the work up
 in a fresh session.
 
-**State: phases 0–12 done. Phase 8 (diff viewer) was rebuilt from scratch on
+**State: phases 0–13 done. Phase 8 (diff viewer) was rebuilt from scratch on
 2026-09-16 on a completely different footing — the diff body is a `WKWebView`,
 not AppKit. Read "The diff surface" before touching it, and "What went wrong"
 before deciding to make it native again. Phase 10 (hunk/line staging) landed the
@@ -75,7 +75,7 @@ Corrections worth keeping:
 | 10 | Hunk/line staging (`PatchBuilder`) | ✅ — parser is back, see below |
 | 11 | FSEvents live refresh | ✅ — see "Live refresh" |
 | 12 | Persistence + workspace switcher | ✅ — the morph was dropped, see below |
-| 13 | fetch/pull/push, branch switch, merge | ⬜ |
+| 13 | fetch/pull/push, branch switch, merge | ✅ |
 | 14 | Conflict resolver | ⬜ |
 | 15 | History + commit graph | ⬜ |
 | 16 | AI commit messages (`claude -p`) | ⬜ |
@@ -183,7 +183,7 @@ renderer shipped blank twice. Worth a session. Likely leads: a test host with th
 WebKit entitlements, an XCTest UI-test target instead of a unit target, or
 driving the page in `safari`/`node` against the built `Web/DiffRenderer`.
 
-Counts as of this handoff: **30 DiffCore tests + 151 app tests**, 3 of the app
+Counts as of this handoff: **30 DiffCore tests + 160 app tests**, 3 of the app
 tests disabled as above. Recount after any change.
 
 ---
@@ -447,6 +447,62 @@ those belong next to the commit composer where the consequence is visible.
 
 ---
 
+## Remotes and branches — phase 13
+
+`RepoEngine`: `fetch`, `pull(_:)`, `push(setUpstream:)`, `switchTo(_:)`,
+`createBranch(named:from:checkout:)`, `merge(_:)`, `abort(_:)`.
+
+### The three that could hurt
+
+1. **There is no force push, of any kind** — not even `--force-with-lease`.
+   Overwriting a remote branch is the one git operation that can destroy someone
+   else's work as well as your own, and it needs its own deliberate action
+   rather than a flag on `push`.
+2. **`pull` has no "just pull".** `git pull` with no strategy takes one from
+   config, and where that is unset it invents a merge commit nobody asked for.
+   The default here is `--ff-only`; when git refuses, `GitError.notFastForward`
+   comes back and the alert offers *Pull and Merge* or *Pull and Rebase* as
+   named choices. The refusal is the feature.
+3. **`git switch`, never `git checkout`.** `checkout` will detach HEAD at a ref
+   that turns out not to be a branch, and a client that does that by accident
+   loses the user's commits.
+
+Other things that are load-bearing:
+
+- `push(setUpstream:)` is decided by the caller, not sniffed. "Where does this
+  branch live" is a choice, and guessing it is how a private branch lands on a
+  shared remote. The button says **Publish** rather than Push when there is no
+  upstream, because it is a different act.
+- Switching to a *remote* branch tries `switch --track origin/x` and falls back
+  to plain `switch x` when the local branch already exists — which is what was
+  meant anyway.
+- A merge conflict comes back as `MergeOutcome.conflicted`, **not** an error. It
+  is a legitimate state the user now has to finish; reporting it as a failure
+  invites the UI to roll it back.
+- `--no-edit` on merge and on `pull --no-rebase`: without it git opens an editor
+  for the merge message, and there is no terminal here for it to open in.
+- `pull` and `merge` take a backup ref first, like every other operation that
+  rewrites the working tree. On a clean tree that costs nothing — `git stash
+  create` returns empty and no ref is written.
+- Network operations get a 300 s timeout. A fetch over a slow link is not a hang.
+
+### Where the buttons are
+
+`RepoActionBar` sits over the **list** column, and only when the sidebar points
+at a repository. The window toolbar stays workspace-scoped (open a folder,
+refresh everything): a network button whose target silently changes with the
+sidebar selection is how a client pushes the wrong branch. Pull is a `Menu` with
+a primary action — click to fast-forward, hold for the two reconciliations.
+
+`BranchesPane` fills the Branches section: local and remote, current marked,
+double-click or hover to switch, context menu to merge into the current branch.
+It reloads on `status.headOID` rather than `loadBranchesIfNeeded`, because
+ahead/behind and the current marker are stale the moment anything touches HEAD.
+
+**Not in this phase:** deleting branches, renaming them, and force-pushing.
+
+---
+
 ## What is solid
 
 ### Git layer — `Sources/Git/`
@@ -625,8 +681,9 @@ Alternatives that were costed and not taken, so they need not be re-costed:
 
 ## Remaining phases, in order
 
-**Phases 13–18** — network ops, conflict resolver, history with a commit graph,
-AI commit messages, then the operation log and recovery window.
+**Phases 14–18** — conflict resolver, history with a commit graph, AI commit
+messages, then the operation log and recovery window. Branch deletion, rename
+and force-push were left out of phase 13 and have no home yet.
 
 Also outstanding: **Settings**, which is where context width and unified/split
 are meant to live, and where the disabled rendering tests should be revisited.

@@ -7,8 +7,8 @@ import Testing
 ///
 /// The prompt building and the answer cleaning are pure and tested as such. The
 /// live call to `claude` is **opt-in** — `touch .grove-test-ai` at the project
-/// root — because it costs network, quota and about ten seconds, and a suite
-/// that spends those on every run is one people stop running.
+/// root — because it costs network and quota, and a suite that spends those on
+/// every run is one people stop running.
 @Suite("Commit messages")
 struct CommitMessageTests {
 
@@ -54,6 +54,65 @@ struct CommitMessageTests {
     func emptyAnswers() {
         #expect(CommitMessagePrompt.clean("   \n\n  ").isEmpty)
         #expect(CommitMessagePrompt.clean("```\n```").isEmpty)
+    }
+
+    // MARK: Attribution
+
+    /// The commit is the user's. A trailer signing it for the tool is something
+    /// they would otherwise delete by hand on every single commit.
+    @Test(
+        "takes a tool's signature off the end of the message",
+        arguments: [
+            (
+                "Add a thing\n\nBecause it was needed.\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+                "Add a thing\n\nBecause it was needed."
+            ),
+            ("Add a thing\n\nCo-authored-by: Claude", "Add a thing"),
+            ("Add a thing\n\nco-authored-by: somebody else", "Add a thing"),
+            (
+                "Add a thing\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+                "Add a thing"
+            ),
+            ("Add a thing\n\nGenerated with Claude Code", "Add a thing"),
+            ("Add a thing\n\nSigned-off-by: Claude <noreply@anthropic.com>", "Add a thing"),
+            // The whole block, blank separator and all.
+            (
+                "Add a thing\n\nBecause.\n\n🤖 Generated with Claude Code\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+                "Add a thing\n\nBecause."
+            ),
+        ]
+    )
+    func stripsAttribution(_ raw: String, _ expected: String) {
+        #expect(CommitMessagePrompt.clean(raw) == expected)
+    }
+
+    /// Only the end of the message, and only what is unmistakably a signature.
+    /// A body discussing the tool, or a subject with a colon in it, is the
+    /// user's text and stays exactly as written.
+    @Test("leaves the message alone when it only talks about the tool")
+    func keepsProse() {
+        let discusses = """
+            Add a Claude-backed commit message writer
+
+            The generated draft is reviewed by a person before it is committed,
+            so Grove never signs a commit on anyone's behalf.
+            """
+        #expect(CommitMessagePrompt.clean(discusses) == discusses)
+
+        #expect(CommitMessagePrompt.clean("Fix: the parser") == "Fix: the parser")
+
+        // A real sign-off by a real person is not ours to remove.
+        let signed = "Add a thing\n\nSigned-off-by: Someone <someone@example.com>"
+        #expect(CommitMessagePrompt.clean(signed) == signed)
+    }
+
+    /// The prompt asking for no attribution is the first layer; replacing the
+    /// CLI's system prompt rather than appending to it is the one that actually
+    /// removes the request for it. The stripping above is the third.
+    @Test("the instructions ask for no trailers at all")
+    func instructionsForbidTrailers() {
+        #expect(CommitMessagePrompt.instructions.contains("Co-Authored-By"))
+        #expect(CommitMessagePrompt.instructions.contains("no attribution"))
     }
 
     // MARK: Prompt body
@@ -178,8 +237,8 @@ struct CommitMessageTests {
     /// tests run inside — an `env` switch here is one that cannot be flipped
     /// from the command line, which is a gate nobody can open.
     ///
-    /// It stays off because it costs network, quota and several seconds, and a
-    /// suite that spends those on every run is one people stop running.
+    /// It stays off because it costs network and quota, and a suite that spends
+    /// those on every run is one people stop running.
     nonisolated static var liveEnabled: Bool {
         let marker = URL(filePath: #filePath)
             .deletingLastPathComponent()  // GroveTests
@@ -213,11 +272,23 @@ struct CommitMessageTests {
                 """
         )
 
+        // The point of this test is the CLI path, and `write` falls through to
+        // the on-device model on any failure — so without this the test passes
+        // just as happily when every flag in the invocation has been rejected.
+        #expect(generated.source == .claudeCode)
         #expect(!generated.text.isEmpty)
         #expect(!generated.wasTruncated)
         // A subject line, not an essay and not a code fence.
         let subject = generated.text.split(separator: "\n").first.map(String.init) ?? ""
         #expect(subject.count <= 80)
         #expect(!generated.text.contains("```"))
+
+        // The draft is the user's message. Nothing in it signs the commit for a
+        // tool — this is the end-to-end check that the flags in
+        // `CommitMessageWriter` still keep the CLI's attribution out.
+        let lowered = generated.text.lowercased()
+        #expect(!lowered.contains("co-author"))
+        #expect(!lowered.contains("anthropic.com"))
+        #expect(!lowered.contains("generated with"))
     }
 }

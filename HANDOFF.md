@@ -631,22 +631,60 @@ all three are exactly when the offline one earns its place.
 ### The invocation
 
 ```
-claude --print --model haiku --permission-prompts none \
-       --append-system-prompt <instructions>  <prompt>      # diff on stdin
+MAX_THINKING_TOKENS=0 \
+claude --print --model haiku --safe-mode --tools "" \
+       --permission-prompts none --no-session-persistence \
+       --system-prompt <instructions>  <prompt>             # diff on stdin
 ```
 
-Verified by running it, not assumed:
+Verified by running it, not assumed. Measured on a 38 KB staged diff with
+`--output-format json`, which reports `duration_api_ms` and the token split:
 
-- **`--permission-prompts none`** is the load-bearing flag: anything that would
-  ask for permission is denied outright, so the model has no tools and cannot
-  touch the repository it is describing. Naming tools to deny instead would
-  need that list to stay correct forever.
+- **`MAX_THINKING_TOKENS=0`** is where the time went. With thinking on, haiku
+  spent 500–1,400 tokens reasoning before writing a word and the call took 8–17
+  seconds — 40 on a bad run, which is what "committing takes a minute" actually
+  was. With it off the same diff comes back in 1–3 seconds, and the messages are
+  no worse: the diff is already in front of the model and summarising it does
+  not reward deliberation.
+- **`--system-prompt` rather than `--append-system-prompt`** is what keeps
+  `Co-Authored-By: Claude` out of the draft. The CLI's default system prompt is
+  where that trailer is asked for, and appending the opposite to it does not
+  reliably win — replacing it removes the request entirely. It also takes the
+  prompt from ~36,000 input tokens to ~12,000, after which almost all of what is
+  sent is the diff.
+- **`--tools ""`** leaves the model no tools at all, which is stronger than the
+  old reasoning that `--permission-prompts none` alone was enough: that denies
+  anything which *would ask*, while a read-only tool need not ask. Both are
+  passed; the prompt flag is now the second lock, not the only one.
+- **`--safe-mode`** ignores the user's `CLAUDE.md`, hooks, plugins, custom
+  commands and MCP servers, and keeps auth, model and built-in tools normal.
+  Grove is asking one question, not running someone's agent setup — and a stray
+  `CLAUDE.md` saying "sign your commits" would otherwise land in this draft.
 - **Not `--bare`**, even though it looks tempting: it forces auth to
   `ANTHROPIC_API_KEY` and never reads the keychain, which breaks a user signed
   in through OAuth.
+- A CLI too old for those flags exits 1 with `error: unknown option '…'` before
+  reaching the model. `CommitMessageWriter` retries once on exactly that stderr
+  with the portable set (`--append-system-prompt`, no other flags), rather than
+  falling through to the on-device model.
 - The diff goes on **stdin**, never in argv — a real one is far past `ARG_MAX`.
 - `claude` is resolved against the **login** PATH for the same reason git is:
   a GUI app inherits launchd's minimal PATH, and `~/.local/bin` is not on it.
+
+### No attribution, in three layers
+
+A trailer signing the commit for the tool is not a cosmetic problem: it is
+something the user has to delete by hand on *every single commit*, which is
+worse than having no generator at all. So:
+
+1. The instructions ask for no trailers and no attribution of any kind.
+2. `--system-prompt` replaces the prompt that asks for one. This is the layer
+   that actually works; the other two exist because it is not Grove's to pin.
+3. `CommitMessagePrompt.stripAttribution` takes such a trailer off the **end** of
+   the answer if one arrives anyway — `Co-Authored-By`, anything signed
+   `@anthropic.com`, "Generated with Claude…", a leading 🤖. Only the end, and
+   only what is unmistakably a signature: a body that discusses Claude, a subject
+   with a colon in it, and a real person's `Signed-off-by` are all left alone.
 
 ### Untrusted input
 
@@ -672,7 +710,12 @@ difference between usually right and always right.
 `xcodebuild test` does not forward the shell's environment to the app the tests
 run inside, so an `env` switch here is a gate nobody can open — which is how it
 was written first, and it silently never ran. It stays off because it costs
-network, quota and about ten seconds per run.
+network and quota (the call itself is now under three seconds).
+
+It asserts `generated.source == .claudeCode`. Without that it passes just as
+happily when every flag in the invocation has been rejected, because `write`
+falls through to the on-device model on any failure — which is the whole point
+of the fallback and the thing that would hide a broken flag list.
 
 Note also that `-only-testing` at *function* level does not match a swift-testing
 test — `-only-testing:GroveTests/CommitMessageTests` works, adding `/liveGeneration`

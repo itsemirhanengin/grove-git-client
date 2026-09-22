@@ -37,7 +37,7 @@
 	<key>SUFeedURL</key>
 	<string>https://github.com/itsemirhanengin/grove-git-client/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string></string>
+	<string>CvbVWHdeg1ybqncTA+b4LsIPA+Leb6lqJrWvD99IVrM=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
 </dict>

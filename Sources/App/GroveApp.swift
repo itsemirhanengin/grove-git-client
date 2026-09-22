@@ -8,6 +8,10 @@ struct GroveApp: App {
     /// window's state cannot be reached from another.
     @State private var model = AppModel()
 
+    /// `nil` in a build that has no key to verify an update with, which is why
+    /// the menu item below is conditional. See ``UpdateController``.
+    @State private var updates = UpdateController.ifConfigured()
+
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
@@ -18,6 +22,14 @@ struct GroveApp: App {
             // menu-backed shortcuts are discoverable, remappable in System
             // Settings, and fire regardless of which subview holds focus.
             CommandGroup(replacing: .newItem) {}
+
+            // Directly under "About Grove", which is where macOS users look for
+            // it and where every other Mac app puts it.
+            if let updates {
+                CommandGroup(after: .appInfo) {
+                    CheckForUpdatesCommand(updates: updates)
+                }
+            }
         }
 
         // A window, not a sheet. It is opened *because* something went wrong,

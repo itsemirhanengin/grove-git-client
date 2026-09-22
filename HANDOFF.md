@@ -81,6 +81,7 @@ Corrections worth keeping:
 | 16 | AI commit messages (`claude -p`) | ✅ |
 | 17 | *(absorbed into 9)* | — |
 | 18 | Operation log, recovery window, stashes | ✅ |
+| 19 | Self-updating (Sparkle) | ✅ — needs a key, see below |
 
 **Design polish is deliberately deferred.** The owner will do a visual pass over
 everything once the features are in. Do not spend turns on aesthetics unasked.
@@ -957,6 +958,70 @@ Alternatives that were costed and not taken, so they need not be re-costed:
 - **STTextView** — solves the TextKit 2 bugs but still needs custom work for a
   two-column gutter and full-width line bands, i.e. the same edge of the same
   bog, plus a dependency.
+
+---
+
+## Self-updating — phase 19
+
+Sparkle, added through Swift Package Manager. The whole of it is
+`Sources/Updates/UpdateController.swift`, four `Info.plist` keys in
+`project.yml`, and a step at the end of `scripts/release.sh`.
+
+### Why it works without a Developer ID
+
+Sparkle trusts an update because of an **EdDSA signature** over the disk image,
+verified against `SUPublicEDKey` in the app bundle. That scheme is Sparkle's own
+and has nothing to do with Apple code signing — so an update cannot be tampered
+with in transit even though the app it replaces is unsigned. Notarization buys
+the *first* install (Gatekeeper), not the update channel. See RELEASE.md for what
+this has and has not been proven to do.
+
+### The feed is hosted on the releases themselves
+
+`SUFeedURL` is
+`https://github.com/itsemirhanengin/grove-git-client/releases/latest/download/appcast.xml`.
+GitHub serves `releases/latest/download/<asset>` as a permanent redirect to that
+asset on the current latest release, so nothing outside GitHub is hosted and the
+URL never changes. The cost is a rule: **every** release must attach
+`appcast.xml`, or `latest` moves to a release without a feed and installed copies
+stop finding updates.
+
+`release.sh` fetches the published feed before regenerating it, so old entries
+survive rather than being replaced by a one-item feed.
+
+### Three things that fail quietly, and the guards for them
+
+- **A forgotten `CURRENT_PROJECT_VERSION`.** Sparkle orders builds by
+  `CFBundleVersion` and ignores the marketing version, so a bumped
+  `MARKETING_VERSION` alone produces a feed with no new entry and a release
+  nobody is offered. `release.sh` greps the finished appcast for this build's
+  disk image and fails if it is not there — checking the outcome, because the
+  input is easy to get wrong in more than one way.
+- **A private key that is not in this Keychain** (another machine, a rebuilt
+  login keychain). `generate_appcast` only *warns* and writes the entry
+  **unsigned**; that feed publishes perfectly and then fails at install time on
+  every user's machine. The same check therefore also asserts the new entry
+  carries a `sparkle:edSignature`.
+- **An empty `SUPublicEDKey`.** Constructing `SPUStandardUpdaterController`
+  starts the updater immediately and reports an unverifiable feed as a *fatal*
+  error in an alert on launch. `UpdateController.ifConfigured()` therefore
+  returns `nil` when the key is missing, and the menu item is conditional on it
+  — so a checkout that has never published anything simply has no update
+  command. `release.sh` refuses to build a release in that state.
+
+### Sparkle's tools come with the package
+
+`bin/generate_keys`, `bin/sign_update` and `bin/generate_appcast` ship inside the
+Swift Package artefact, at
+`.build/dd/SourcePackages/artifacts/sparkle/Sparkle/bin/`. There is nothing to
+install, but they only exist after one build has resolved the package.
+
+### Automatic checks are opt-in, by omission
+
+`SUEnableAutomaticChecks` is deliberately **not** set. Leaving it out is what
+makes Sparkle ask, on the second launch, before it ever reaches the network on
+its own. Setting it to `true` would opt every user into a background check they
+were never offered.
 
 ---
 

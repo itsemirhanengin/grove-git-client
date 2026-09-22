@@ -11,6 +11,16 @@ options:
 packages:
   DiffCore:
     path: Packages/DiffCore
+  # Self-updating. Pinned to a major version: Sparkle's own EdDSA signing is
+  # what makes an update trustworthy here, and that contract is the thing that
+  # must not change under a `swift package update`.
+  #
+  # The Swift Package artefact also carries `bin/generate_keys`,
+  # `bin/sign_update` and `bin/generate_appcast`, which is where
+  # `scripts/release.sh` finds them — there is nothing else to install.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.10.0"
 
 settings:
   base:
@@ -61,6 +71,8 @@ targets:
     dependencies:
       - package: DiffCore
         product: DiffCore
+      - package: Sparkle
+        product: Sparkle
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.emirhanengin.grove
@@ -86,6 +98,25 @@ targets:
         NSSupportsSuddenTermination: false
         NSSupportsAutomaticTermination: false
         NSHumanReadableCopyright: ""
+
+        # Updates, read by Sparkle. See RELEASE.md.
+        #
+        # `SUPublicEDKey` is empty until `bin/generate_keys` has been run once —
+        # the private half of that pair lives in the releaser's Keychain and
+        # cannot be committed. While it is empty Grove does not start the updater
+        # at all and the menu item stays out, rather than letting Sparkle raise a
+        # fatal error about a feed it cannot verify. See ``UpdateController``.
+        SUPublicEDKey: ""
+        # `releases/latest/download/<asset>` is a permanent redirect to that
+        # asset on whatever the latest release is, so the feed URL never has to
+        # change and nothing outside GitHub has to be hosted.
+        SUFeedURL: "https://github.com/itsemirhanengin/grove-git-client/releases/latest/download/appcast.xml"
+        SUScheduledCheckInterval: 86400
+        # NOT set: `SUEnableAutomaticChecks`. Leaving it out is what makes
+        # Sparkle *ask*, on the second launch, before it ever reaches the
+        # network on its own. Setting it to true would silently opt every user
+        # into a background check they were never offered, which is not a
+        # decision Grove gets to make for them.
 
   GroveTests:
     type: bundle.unit-test

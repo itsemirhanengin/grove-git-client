@@ -30,7 +30,7 @@ struct ConflictPane: View {
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Palette.diffCanvas.color)
+            .diffBackground()
             .safeAreaBar(edge: .top, spacing: 0) { header }
             .safeAreaBar(edge: .bottom, spacing: 0) { actions }
             .task(id: taskKey) { await load() }
@@ -49,46 +49,31 @@ struct ConflictPane: View {
     // MARK: Header
 
     private var header: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: Space.sm) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(Palette.attention.color)
+        PaneHeader {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(Palette.attention.color)
 
-                Text(change.singleLineFileName)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                if !change.directoryPrefix.isEmpty {
-                    Text(FileChange.sanitizeForSingleLine(change.directoryPrefix))
-                        .font(Typography.secondaryDetail)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                        .layoutPriority(-1)
-                }
-
-                Spacer(minLength: Space.md)
-
-                Text("Conflicted")
-                    .font(Typography.secondaryDetail)
-                    .foregroundStyle(Palette.attention.color)
-            }
-            .padding(.horizontal, Space.lg)
-            .frame(height: 26)
-
-            Text(subtitle)
-                .font(Typography.secondaryDetail)
-                .foregroundStyle(.secondary)
+            Text(change.singleLineFileName)
+                .font(.headline)
                 .lineLimit(1)
-                .padding(.horizontal, Space.lg)
-                .padding(.bottom, Space.xs)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .truncationMode(.middle)
 
-            Divider()
+            if !change.directoryPrefix.isEmpty {
+                Text(FileChange.sanitizeForSingleLine(change.directoryPrefix))
+                    .font(Typography.secondaryDetail)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .layoutPriority(-1)
+            }
+
+            Spacer(minLength: Space.md)
+
+            Text("Conflicted")
+                .font(Typography.secondaryDetail)
+                .foregroundStyle(Palette.attention.color)
         }
-        .background(.bar)
     }
 
     private var subtitle: String {
@@ -104,43 +89,45 @@ struct ConflictPane: View {
     // MARK: Actions
 
     private var actions: some View {
-        VStack(spacing: 0) {
-            Divider()
-            HStack(spacing: Space.md) {
-                if let operation = repo.status.inProgress {
-                    Button("Abort \(operation.label)", role: .destructive) {
-                        repo.abortInProgress()
-                    }
-                    .disabled(repo.isBusy)
-                }
+        StatusBar {
+            Text(subtitle)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
 
-                Spacer(minLength: Space.md)
+            Spacer(minLength: Space.md)
 
-                Button(RepoEngine.ConflictSide.ours.title) {
-                    repo.resolve(change, using: .ours)
+            if let operation = repo.status.inProgress {
+                Button("Abort \(operation.label)", role: .destructive) {
+                    repo.abortInProgress()
                 }
+                .controlSize(.small)
                 .disabled(repo.isBusy)
-                .help("Discard the incoming version of this file entirely")
-
-                Button(RepoEngine.ConflictSide.theirs.title) {
-                    repo.resolve(change, using: .theirs)
-                }
-                .disabled(repo.isBusy)
-                .help("Discard your version of this file entirely")
-
-                Button("Mark Resolved") { repo.markResolved(change) }
-                    .buttonStyle(.glassProminent)
-                    .disabled(repo.isBusy || hasMarkers)
-                    .help(
-                        hasMarkers
-                            ? "Conflict markers are still in the file"
-                            : "Stage this file as resolved"
-                    )
             }
-            .padding(.horizontal, Space.lg)
-            .frame(height: Metrics.bar)
+
+            Button(RepoEngine.ConflictSide.ours.title) {
+                repo.resolve(change, using: .ours)
+            }
+            .controlSize(.small)
+            .disabled(repo.isBusy)
+            .help("Discard the incoming version of this file entirely")
+
+            Button(RepoEngine.ConflictSide.theirs.title) {
+                repo.resolve(change, using: .theirs)
+            }
+            .controlSize(.small)
+            .disabled(repo.isBusy)
+            .help("Discard your version of this file entirely")
+
+            Button("Mark Resolved") { repo.markResolved(change) }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+                .disabled(repo.isBusy || hasMarkers)
+                .help(
+                    hasMarkers
+                        ? "Conflict markers are still in the file"
+                        : "Stage this file as resolved"
+                )
         }
-        .background(.bar)
     }
 
     /// Refuses to let a file be marked resolved while `<<<<<<<` is still in it.

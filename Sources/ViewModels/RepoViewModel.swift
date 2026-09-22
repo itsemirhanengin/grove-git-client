@@ -104,20 +104,31 @@ final class RepoViewModel: Identifiable {
         Array((status.unstaged + status.untracked).prefix(Self.displayRowCap))
     }
 
-    /// Whether any group was truncated for display.
-    var hasMoreThanDisplayed: Bool {
-        status.conflicted.count > Self.displayRowCap
-            || status.staged.count > Self.displayRowCap
-            || (status.unstaged.count + status.untracked.count) > Self.displayRowCap
+    /// Every change in one list — what the working copy actually renders.
+    ///
+    /// The staged/unstaged split used to be two groups with a header each. It
+    /// is now a checkbox per row, which is both fewer things on screen and a
+    /// truer picture: a file that is staged *and* edited again is one file, and
+    /// showing it twice made every such repository look busier than it was.
+    ///
+    /// Conflicts are pinned to the top because they are the only rows that
+    /// block a commit; everything else is sorted by path, so the list is stable
+    /// as files move between staged and unstaged.
+    var orderedChanges: [FileChange] {
+        let all = status.changes.filter { $0.kind != .ignored }
+        return all.sorted { lhs, rhs in
+            if lhs.isConflicted != rhs.isConflicted { return lhs.isConflicted }
+            return lhs.displayPath.localizedStandardCompare(rhs.displayPath) == .orderedAscending
+        }
     }
 
-    /// How many rows the cap is holding back, across all groups.
-    var hiddenRowCount: Int {
-        let unstagedTotal = status.unstaged.count + status.untracked.count
-        return max(0, status.conflicted.count - Self.displayRowCap)
-            + max(0, status.staged.count - Self.displayRowCap)
-            + max(0, unstagedTotal - Self.displayRowCap)
-    }
+    var displayedChanges: [FileChange] { Array(orderedChanges.prefix(Self.displayRowCap)) }
+
+    /// Whether the list was truncated for display.
+    var hasMoreThanDisplayed: Bool { orderedChanges.count > Self.displayRowCap }
+
+    /// How many rows the cap is holding back.
+    var hiddenRowCount: Int { max(0, orderedChanges.count - Self.displayRowCap) }
 
     var errorMessage: String? {
         guard case .failed(let error) = loadState else { return nil }
@@ -323,6 +334,29 @@ final class RepoViewModel: Identifiable {
 
     func unstageAll() {
         unstage(status.staged)
+    }
+
+    /// Whether every change is fully in the index.
+    ///
+    /// What turns one button from "Stage All" into "Unstage All". Two buttons
+    /// standing side by side, one of them always dimmed, was half the clutter
+    /// in the composer and none of the information.
+    var isEverythingStaged: Bool {
+        let changes = status.changes.filter { $0.kind != .ignored }
+        return !changes.isEmpty && changes.allSatisfy { StageState($0) == .on }
+    }
+
+    func toggleStageAll() {
+        isEverythingStaged ? unstageAll() : stageAll()
+    }
+
+    /// One row's checkbox.
+    ///
+    /// A partly staged file stages the *rest* of itself rather than emptying
+    /// out: the box fills in as you click it, which is the only reading of a
+    /// checkbox anyone has.
+    func toggleStage(_ change: FileChange) {
+        StageState(change) == .on ? unstage([change]) : stage([change])
     }
 
     /// Asks before discarding. Always — this is the only operation that can

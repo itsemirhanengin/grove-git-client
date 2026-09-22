@@ -31,7 +31,6 @@ struct StashesPane: View {
                             onPop: { repo.popStash(stash) },
                             onDrop: { repo.pendingStashDrop = stash }
                         )
-                        .padding(.horizontal, Space.lg)
                     }
                 }
 
@@ -41,7 +40,6 @@ struct StashesPane: View {
                         count: repo.selectedStashChanges.count,
                         shown: repo.selectedStashChanges.count
                     )
-                    .padding(.horizontal, Space.lg)
 
                     ForEach(repo.selectedStashChanges) { change in
                         ChangeRow(
@@ -50,7 +48,6 @@ struct StashesPane: View {
                             isSelected: repo.selectedStashChange?.pathBytes == change.pathBytes,
                             onSelect: { repo.selectedStashChange = change }
                         )
-                        .padding(.horizontal, Space.lg)
                     }
                 }
             }
@@ -106,21 +103,17 @@ struct StashesPane: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: Space.md) {
+        ColumnHeader {
             Text(repo.stashes.isEmpty ? "Nothing stashed" : "\(repo.stashes.count) stashed")
-                .font(Typography.secondaryDetail)
-                .foregroundStyle(.secondary)
 
             Spacer(minLength: Space.md)
 
             Button("Stash Changes…", systemImage: "tray.and.arrow.down") { isNaming = true }
-                .labelStyle(.titleAndIcon)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.header)
                 .disabled(!repo.canStash)
                 .help(repo.canStash ? "Put the working copy aside" : "Nothing to stash")
         }
-        .padding(.horizontal, Space.lg)
-        .frame(height: Metrics.accessoryBar)
-        .background(.bar)
     }
 }
 
@@ -163,11 +156,11 @@ private struct StashRow: View {
             }
         }
         .font(Typography.secondaryDetail)
+        .padding(.horizontal, Space.lg)
         .frame(height: Metrics.fileRow)
-        .padding(.horizontal, Space.xs)
-        .background {
-            if isSelected { RoundedRectangle(cornerRadius: Radius.sm).fill(.selection) }
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isSelected ? AnyShapeStyle(.selection) : AnyShapeStyle(.clear))
+        .hairline(.bottom, color: Palette.rowSeparator.color)
         .contentShape(.rect)
         .onHover { isHovered = $0 }
         .onTapGesture(perform: onSelect)

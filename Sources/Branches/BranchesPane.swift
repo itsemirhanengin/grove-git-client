@@ -53,22 +53,22 @@ struct BranchesPane: View {
 
     // MARK: Toolbar
 
+    /// A ``ColumnHeader``, not a second ``PaneHeader``: the branch and its
+    /// upstream are already named in the band above this one, so repeating them
+    /// at the same weight would read as two headers for one pane.
     private var toolbar: some View {
-        HStack(spacing: Space.md) {
+        ColumnHeader {
             Text(current.map { "On \($0.name)" } ?? repo.branchLabel)
-                .font(Typography.secondaryDetail)
-                .foregroundStyle(.secondary)
                 .lineLimit(1)
 
             Spacer(minLength: Space.md)
 
             Button("New Branch…", systemImage: "plus") { isNamingBranch = true }
-                .labelStyle(.titleAndIcon)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.header)
                 .disabled(repo.isBusy || repo.status.isUnborn)
+                .help("Create a branch from \(current?.name ?? "HEAD") and check it out")
         }
-        .padding(.horizontal, Space.lg)
-        .frame(height: Metrics.accessoryBar)
-        .background(.bar)
     }
 
     // MARK: Rows
@@ -85,12 +85,9 @@ struct BranchesPane: View {
                         onSwitch: { repo.switchTo(branch) },
                         onMerge: { repo.merge(branch) }
                     )
-                    .padding(.horizontal, Space.lg)
                 }
             } header: {
                 GroupLabelRow(title: title, count: branches.count, shown: branches.count)
-                    .padding(.horizontal, Space.lg)
-                    .background(.bar)
             }
         }
     }
@@ -141,8 +138,10 @@ private struct BranchRow: View {
                     .disabled(isBusy)
             }
         }
+        .padding(.horizontal, Space.lg)
         .frame(height: Metrics.fileRow)
-        .padding(.horizontal, Space.xs)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .hairline(.bottom, color: Palette.rowSeparator.color)
         .contentShape(.rect)
         .onHover { isHovered = $0 }
         .onTapGesture(count: 2) { if !isCurrent && !isBusy { onSwitch() } }

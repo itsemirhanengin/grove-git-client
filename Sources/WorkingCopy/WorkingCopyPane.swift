@@ -1,17 +1,22 @@
 import SwiftUI
 
-/// The Working Copy view: compose a commit above, review what goes into it below.
+/// The Working Copy view: compose a commit above, tick what goes into it below.
 ///
-/// Follows Tower's arrangement — composer on top, file list beneath — rather
-/// than VS Code's box-per-repository. The practical reason is that a `TextField`
-/// inside a recycling `List` loses focus as rows scroll, and every keystroke
-/// invalidates a row inside a virtualised container. Here the composer lives
-/// outside the scrolling area entirely, so ⌘⏎ works no matter where the list is
-/// scrolled to.
+/// The arrangement is Tower's — composer on top, file table beneath — for a
+/// practical reason: a `TextField` inside a recycling `List` loses focus as rows
+/// scroll, and every keystroke invalidates a row inside a virtualised container.
+/// Here the composer lives outside the scrolling area entirely, so ⌘⏎ works no
+/// matter where the table is scrolled to.
+///
+/// What changed in the redesign is underneath. There is no Staged group and no
+/// Changes group any more: one table, one row per file, and a **checkbox** that
+/// says whether that file is in the next commit. "Stage All" is then exactly
+/// what it sounds like — tick every box — and ticking three boxes by hand
+/// commits those three files and nothing else.
 struct WorkingCopyPane: View {
     @Bindable var repo: RepoViewModel
 
-    /// Needed only to route selection through ``WorkspaceModel/select(_:staged:in:)``,
+    /// Needed only to route selection through ``WorkspaceModel/select(_:in:)``,
     /// so that a file opened here and a file opened in the Overview are the
     /// same kind of event.
     let workspace: WorkspaceModel
@@ -19,9 +24,14 @@ struct WorkingCopyPane: View {
     var body: some View {
         VStack(spacing: 0) {
             CommitComposer(repo: repo)
-            Divider()
-            ChangeList(repo: repo, workspace: workspace)
+
+            if repo.status.inProgress != nil {
+                InProgressBanner(repo: repo)
+            }
+
+            ChangeTable(repo: repo, workspace: workspace)
         }
+        .paneBackground()
     }
 }
 
@@ -42,33 +52,27 @@ private struct CommitComposer: View {
             .font(.body)
             .lineLimit(2...6)
             .focused($isMessageFocused)
-            .padding(Space.md)
-            .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: Radius.md))
+            .padding(.horizontal, Space.md)
+            .padding(.vertical, Space.sm)
+            .background(Palette.headerFill.color)
+            // Square, and bordered rather than filled-and-rounded: the field is
+            // the same shape as the table below it, so the composer reads as
+            // part of the pane instead of a card sitting on it.
+            .border(Palette.border.color, width: 1)
 
             if let generated = repo.lastGeneratedMessage {
                 provenance(generated)
             }
 
             HStack(spacing: Space.md) {
-                Button("Stage All") { repo.stageAll() }
-                    .disabled(repo.status.unstaged.isEmpty && repo.status.untracked.isEmpty)
-                    .keyboardShortcut("s", modifiers: [.command, .shift])
-
-                Button("Unstage All") { repo.unstageAll() }
-                    .disabled(repo.status.staged.isEmpty)
-
-                // Writes into the draft and stops there. Grove never commits on
-                // its own, so every generated message is read by a person first.
-                Button {
-                    repo.generateCommitMessage()
-                } label: {
-                    Label("Write Message", systemImage: "sparkles")
-                        .labelStyle(.iconOnly)
-                        .symbolEffect(.pulse, isActive: repo.isGeneratingMessage)
+                // One button, not two. "Stage All" next to a permanently dimmed
+                // "Unstage All" spent a control on saying nothing; this one says
+                // what the next click will do.
+                Button(repo.isEverythingStaged ? "Unstage All" : "Stage All") {
+                    repo.toggleStageAll()
                 }
-                .disabled(!repo.canGenerateMessage)
-                .keyboardShortcut("g", modifiers: [.command, .shift])
-                .help(generateHelp)
+                .disabled(repo.status.changes.isEmpty)
+                .keyboardShortcut("s", modifiers: [.command, .shift])
 
                 Spacer()
 
@@ -76,18 +80,29 @@ private struct CommitComposer: View {
                     ProgressView().controlSize(.small)
                 }
 
+                // Writes into the draft and stops there. Grove never commits on
+                // its own, so every generated message is read by a person first.
                 Button {
-                    repo.commit()
+                    repo.generateCommitMessage()
                 } label: {
-                    Label("Commit", systemImage: "checkmark")
+                    Image(systemName: "sparkles")
+                        .symbolEffect(.pulse, isActive: repo.isGeneratingMessage)
                 }
-                .buttonStyle(.glassProminent)
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(!repo.canCommit)
-                .help(commitHelp)
+                .buttonStyle(.header)
+                .disabled(!repo.canGenerateMessage)
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .help(generateHelp)
+
+                Button("Commit") { repo.commit() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(!repo.canCommit)
+                    .help(commitHelp)
             }
         }
         .padding(Space.lg)
+        .background(Palette.contentFill.color)
+        .hairline(.bottom)
     }
 
     /// Says where a generated message came from, and admits when the model was
@@ -122,7 +137,7 @@ private struct CommitComposer: View {
     }
 
     private var commitHelp: String {
-        if repo.status.staged.isEmpty { return "Stage something first" }
+        if repo.status.staged.isEmpty { return "Tick a file first" }
         if repo.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "Write a commit message first"
         }
@@ -130,72 +145,114 @@ private struct CommitComposer: View {
     }
 }
 
-// MARK: - Change list
+// MARK: - Table
 
-private struct ChangeList: View {
+private struct ChangeTable: View {
     let repo: RepoViewModel
     let workspace: WorkspaceModel
 
+    private var changes: [FileChange] { repo.displayedChanges }
+
+    private var stagedCount: Int { repo.status.staged.count }
+
+    private var fileSummary: String {
+        let total = repo.orderedChanges.count
+        if total == 0 { return "No changes" }
+        return total == 1 ? "1 changed file" : "\(total) changed files"
+    }
+
     var body: some View {
+        VStack(spacing: 0) {
+            // A rule that says what the table holds, rather than one that names
+            // its columns: "Status" over a 16pt badge and "Filename" over a
+            // path are labels for two things nobody has ever needed labelled,
+            // and the count is the thing actually worth knowing before you
+            // scroll.
+            ColumnHeader {
+                Text(fileSummary)
+                Spacer()
+                if stagedCount > 0 {
+                    Text("\(stagedCount) staged")
+                        .foregroundStyle(.tint)
+                        .contentTransition(.numericText())
+                }
+            }
+
+            if changes.isEmpty {
+                ContentUnavailableView(
+                    "Nothing to commit",
+                    systemImage: "checkmark.seal",
+                    description: Text("The working copy is clean.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                rows
+            }
+        }
+    }
+
+    private var rows: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                group(
-                    "Conflicts", repo.displayedConflicted,
-                    total: repo.status.conflicted.count, staged: false)
-                group(
-                    "Staged", repo.displayedStaged,
-                    total: repo.status.staged.count, staged: true)
-                group(
-                    "Changes", repo.displayedUnstaged,
-                    total: repo.status.unstaged.count + repo.status.untracked.count,
-                    staged: false)
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(changes.enumerated()), id: \.element.id) { index, change in
+                    ChangeRow(
+                        change: change,
+                        staged: !change.isUnstaged,
+                        stageState: StageState(change),
+                        onToggleStage: { repo.toggleStage(change) },
+                        // Only what is still in the working tree can be thrown
+                        // away; a staged file's escape hatch is the checkbox.
+                        onDiscard: change.isUnstaged ? { repo.requestDiscard([change]) } : nil,
+                        isSelected: repo.selectedChange?.change.pathBytes == change.pathBytes,
+                        onSelect: { workspace.select(change, in: repo) },
+                        showsSeparator: index < changes.count - 1
+                    )
+                }
 
                 if repo.hasMoreThanDisplayed {
                     OverflowRow(hidden: repo.hiddenRowCount)
-                        .padding(.horizontal, Space.lg)
-                }
-
-                if repo.status.changes.isEmpty {
-                    ContentUnavailableView(
-                        "Nothing to commit",
-                        systemImage: "checkmark.seal",
-                        description: Text("The working copy is clean.")
-                    )
-                    .padding(.top, Space.xxxl)
                 }
             }
-            .padding(.bottom, Space.xl)
         }
         .scrollEdgeEffectStyle(.hard, for: .top)
     }
+}
 
-    @ViewBuilder
-    private func group(
-        _ title: String, _ changes: [FileChange], total: Int, staged: Bool
-    ) -> some View {
-        if !changes.isEmpty {
-            Section {
-                ForEach(changes.map { ChangeRowItem(change: $0, staged: staged) }) { item in
-                    let change = item.change
-                    ChangeRow(
-                        change: change,
-                        staged: staged,
-                        onStage: { staged ? repo.unstage([change]) : repo.stage([change]) },
-                        // Staged rows offer no discard: unstaging is the
-                        // reversible step, and discarding from here would throw
-                        // away work in one click.
-                        onDiscard: staged ? nil : { repo.requestDiscard([change]) },
-                        isSelected: repo.selectedChange
-                            == SelectedChange(change: change, staged: staged),
-                        onSelect: { workspace.select(change, staged: staged, in: repo) }
-                    )
-                    .padding(.horizontal, Space.lg)
-                }
-            } header: {
-                GroupLabelRow(title: title, count: total, shown: changes.count)
-                    .padding(.horizontal, Space.lg)
-                    .background(.bar)
+// MARK: - In-progress banner
+
+/// A merge, rebase, cherry-pick or revert that has stopped half way.
+///
+/// This used to be three controls living permanently in the repository's action
+/// bar, visible in the 99% of the time no merge was running. It is an
+/// exceptional state, so it gets an exceptional row — and nothing at all
+/// otherwise.
+struct InProgressBanner: View {
+    let repo: RepoViewModel
+
+    var body: some View {
+        if let operation = repo.status.inProgress {
+            HStack(spacing: Space.md) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text("\(operation.label) in progress")
+                    .font(Typography.secondaryDetail.weight(.medium))
+
+                Spacer(minLength: Space.md)
+
+                Button("Abort") { repo.abortInProgress() }
+                    .controlSize(.small)
+                    .disabled(repo.isBusy)
+
+                Button("Continue") { repo.continueMerge() }
+                    .controlSize(.small)
+                    .disabled(!repo.canContinueMerge)
+                    .help("Commit the \(operation.label.lowercased()) with git's own message")
             }
+            .foregroundStyle(Palette.attention.color)
+            .padding(.horizontal, Space.lg)
+            .frame(height: Metrics.paneHeader)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.attention.color.opacity(0.12))
+            .hairline(.bottom)
         }
     }
 }

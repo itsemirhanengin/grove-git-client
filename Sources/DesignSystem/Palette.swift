@@ -158,12 +158,46 @@ enum Palette {
         light: 0xF6F8_FA, lightHighContrast: 0xFFFF_FF,
         dark: 0x161B_22, darkHighContrast: 0x1C22_2B)
 
+    /// The reading surface the file list and its tables sit on. Opaque, not a
+    /// material: a table of file names is content, and content that samples
+    /// what is behind the window is content you have to work to read.
+    static let contentFill = Swatch(
+        light: 0xFFFF_FF, lightHighContrast: 0xFFFF_FF,
+        dark: 0x1C1C_1F, darkHighContrast: 0x0E0E_10)
+
+    /// Every pane header, column header, status bar — and the strip behind the
+    /// title bar, which is the same band seen from above.
+    ///
+    /// **Neutral, not blue.** The first version of these greys carried a slight
+    /// blue cast, which put them at odds with the one surface in the window we
+    /// do not control: macOS's own sidebar material, which is neutral. Two
+    /// almost-but-not-quite matching greys across a column divider is worse than
+    /// an honest contrast, so the palette follows the sidebar rather than
+    /// fighting it. The dark value is measured from that material.
+    static let headerFill = Swatch(
+        light: 0xF2F2_F3, lightHighContrast: 0xE8E8_E9,
+        dark: 0x2525_28, darkHighContrast: 0x1717_1A)
+
+    /// The hairline that does the actual work of this design: it closes every
+    /// header, separates every row, and divides every column. `separatorColor`
+    /// is deliberately not used — it is tuned for list views over vibrancy and
+    /// all but vanishes against ``headerFill``.
+    static let border = Swatch(
+        light: 0xD8D8_DA, lightHighContrast: 0xA0A0_A3,
+        dark: 0x3434_37, darkHighContrast: 0x4E4E_52)
+
+    /// The row separator inside a table. A quieter ``border`` — a full-strength
+    /// rule under every file name turns a list into a spreadsheet.
+    static let rowSeparator = Swatch(
+        light: 0xECEC_EE, lightHighContrast: 0xD4D4_D6,
+        dark: 0x2A2A_2D, darkHighContrast: 0x3A3A_3E)
+
     /// Everything that appears in the design-system preview, in display order.
     static let statusSwatches: [(name: String, letter: String, swatch: Swatch)] = [
         ("Added", "A", added),
         ("Removed", "D", removed),
         ("Modified", "M", modified),
-        ("Untracked", "?", untracked),
+        ("Untracked / new", "A", untracked),
         ("Renamed", "R", renamed),
         ("Conflict / warning", "U", attention),
     ]
@@ -207,9 +241,31 @@ extension FileChange {
     }
 
     /// The letter shown in the status column.
+    ///
+    /// An untracked file is `A`, not git's own `?`. The question mark is
+    /// porcelain shorthand for "git has never heard of this path", which is true
+    /// but reads in a UI as *Grove* not knowing what the file is — it was
+    /// reported as a bug on sight. `A` says the thing that is actually true of
+    /// it: ticking its box adds it. The distinction from a staged addition
+    /// survives in the colour, which is ``Palette/untracked`` rather than
+    /// ``Palette/added``, and in the row's tooltip.
     func statusLetter(staged: Bool) -> String {
         if isConflicted { return "U" }
-        if kind == .untracked { return "?" }
+        if kind == .untracked { return "A" }
         return (staged ? indexStatus : worktreeStatus).letter
+    }
+
+    /// What the status letter means, spelled out for the row's tooltip.
+    var statusDescription: String {
+        if isConflicted { return "Conflicted" }
+        if kind == .untracked { return "New file, not yet tracked" }
+        switch worktreeStatus.isChanged ? worktreeStatus : indexStatus {
+        case .added: return "Added"
+        case .deleted: return "Deleted"
+        case .renamed: return originalDisplayPath.map { "Renamed from \($0)" } ?? "Renamed"
+        case .copied: return "Copied"
+        case .typeChanged: return "Type changed"
+        default: return "Modified"
+        }
     }
 }

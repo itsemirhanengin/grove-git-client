@@ -33,3 +33,21 @@ diffs-container {
   font: message-box;
   color: color-mix(in srgb, currentColor 55%, transparent);
 }
+
+/* Square, edge to edge. The diff is the pane's content, not a card sitting in
+   it: nothing here may round a corner or hold itself away from an edge, because
+   the pane's own borders are what the eye is following. Written against the
+   component's host and its shadow parts rather than its internals, so a library
+   update changes what is inside the grid and not whether the grid is inset. */
+diffs-container {
+  border-radius: 0;
+  margin: 0;
+}
+
+/* The hunk header — `@@ -80,14 +80,15 @@` — is the one row that reads as a
+   divider rather than as code, so it gets the full width and a rule of its own
+   instead of a floating rounded strip. */
+diffs-container::part(hunk-separator),
+diffs-container::part(line-info) {
+  border-radius: 0;
+}

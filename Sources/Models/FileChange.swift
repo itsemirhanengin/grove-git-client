@@ -153,6 +153,27 @@ nonisolated struct FileChange: Sendable, Equatable, Identifiable {
     }
 }
 
+/// How much of a file is in the index.
+///
+/// The third case is the one that matters. `MM` — staged, then edited again —
+/// is a real and common state, and a client that shows it as either a plain
+/// tick or a plain box is lying about what its next commit contains.
+nonisolated enum StageState: Sendable, Equatable {
+    case off
+    case on
+    case partial
+
+    init(_ change: FileChange) {
+        switch (change.isStaged, change.isUnstaged) {
+        case (true, true): self = .partial
+        case (true, false): self = .on
+        default: self = .off
+        }
+    }
+
+    var isChecked: Bool { self != .off }
+}
+
 /// The state of one repository at a moment in time.
 nonisolated struct RepoStatus: Sendable, Equatable {
 

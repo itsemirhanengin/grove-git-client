@@ -87,6 +87,62 @@ function applyChrome(payload: Pick<RenderPayload, 'canvas' | 'fontSize'>): void 
   root.style.setProperty('--diffs-line-height', `${lineHeight}px`)
   root.style.setProperty('--diffs-light-bg', payload.canvas)
   root.style.setProperty('--diffs-dark-bg', payload.canvas)
+
+  // Full bleed. The library pads its diff on all four sides, which inside a
+  // native pane reads as the diff being a card floating in the column rather
+  // than the column's content — line numbers start in mid-air, and the
+  // highlighted background of a changed line stops short of both edges. Zeroing
+  // both gaps lands the gutter on the pane's left border and lets an added line
+  // run the full width, which is what every native diff viewer does.
+  root.style.setProperty('--diffs-gap-inline', '0px')
+  root.style.setProperty('--diffs-gap-block', '0px')
+}
+
+/// Squares off the corners the library rounds inside its own shadow root.
+///
+/// Two of them: the "N unmodified lines" separator and the word-level highlight
+/// within a changed line. Both are hardcoded pixel radii rather than custom
+/// properties, so there is no variable to set — and a shadow root is opaque to
+/// the document's stylesheet, so `grove.css` cannot reach them either.
+///
+/// The gutter's `+` button keeps its radius on purpose. Everything else here is
+/// a *surface*, and surfaces in Grove are square; that is a control, and a
+/// control that looks pressable is doing its job.
+///
+/// It can still be done cleanly because the component attaches its shadow root
+/// `open` and styles itself through `adoptedStyleSheets`: appending one more
+/// sheet to that array is the supported way to extend it, and it survives the
+/// library restyling itself.
+const SQUARE_CORNERS = `
+  [data-separator="line-info"] [data-separator-content],
+  [data-separator="line-info-basic"] [data-separator-content] { border-radius: 0; }
+  [data-diff-span] { border-radius: 0; }
+  [data-code]::-webkit-scrollbar-thumb { border-radius: 0; }
+`
+
+let squareSheet: CSSStyleSheet | undefined
+
+function applySquareCorners(attempt = 0): void {
+  const host = container!.querySelector('diffs-container')
+  const root = host?.shadowRoot
+  if (!root) {
+    // The custom element attaches its shadow root when it connects, which is
+    // synchronous — but only once the element definition has been upgraded. On
+    // the very first render that can land a frame late, and giving up silently
+    // would leave exactly one diff per launch with rounded corners.
+    if (attempt < 10) requestAnimationFrame(() => applySquareCorners(attempt + 1))
+    return
+  }
+
+  if (!squareSheet) {
+    squareSheet = new CSSStyleSheet()
+    squareSheet.replaceSync(SQUARE_CORNERS)
+  }
+  if (!root.adoptedStyleSheets.includes(squareSheet)) {
+    // Appended, never assigned: the library's own sheet is already in there and
+    // replacing the array would render the diff unstyled.
+    root.adoptedStyleSheets = [...root.adoptedStyleSheets, squareSheet]
+  }
 }
 
 function showNotice(text: string): void {
@@ -186,6 +242,7 @@ function render(raw: string): void {
   // root is where all of its `:host` styling lives — so the diff renders with
   // no grid, no colours and no alignment at all.
   component.render({ fileDiff: metadata, containerWrapper: container! })
+  applySquareCorners()
 
   // A selection means line numbers in *this* diff. Carrying one across a file
   // change would hand Swift a range that points into a document nobody is
@@ -265,6 +322,8 @@ function renderConflict(raw: string): void {
     showNotice('Could not read the conflict markers in this file.')
     return
   }
+
+  applySquareCorners()
 
   send({ type: 'rendered', lines: 0 })
 }

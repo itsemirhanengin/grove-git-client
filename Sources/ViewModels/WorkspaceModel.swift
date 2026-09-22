@@ -161,6 +161,16 @@ final class WorkspaceModel: Identifiable {
         focusedRepoID = repo.id
     }
 
+    /// Opens a change's diff without being told which side to show.
+    ///
+    /// The file list no longer has a staged half and an unstaged half for a
+    /// click to come from, so the side is derived: whatever is still in the
+    /// working tree, because that is the part the user can still act on. The
+    /// diff's own Staged/Unstaged switch covers the other case.
+    func select(_ change: FileChange, in repo: RepoViewModel) {
+        select(change, staged: !change.isUnstaged, in: repo)
+    }
+
     /// The user's own expand/collapse, recorded so it survives a relaunch.
     func setExpanded(_ repo: RepoViewModel, _ expanded: Bool) {
         repo.expansionOverride = expanded

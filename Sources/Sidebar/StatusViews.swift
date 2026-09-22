@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The branch name next to a repository.
@@ -17,10 +18,7 @@ struct BranchPill: View {
                 .truncationMode(.middle)
         }
         .foregroundStyle(isDetached ? Palette.attention.color : Color.secondary)
-        .padding(.horizontal, Space.sm)
-        .padding(.vertical, 1)
-        .background(.quaternary, in: .capsule)
-        .frame(maxWidth: 130, alignment: .leading)
+        .frame(maxWidth: 140, alignment: .leading)
         .fixedSize(horizontal: true, vertical: false)
     }
 }
@@ -61,13 +59,14 @@ struct AheadBehindBadge: View {
     }
 }
 
-/// A non-selectable "Staged" / "Changes" divider inside a repository section.
+/// A non-selectable label row inside a list.
 ///
-/// `List` does not support nested sections, so the staged/unstaged split is an
-/// inline label row rather than a real subsection.
+/// Used where a list genuinely has two kinds of thing in it — local and remote
+/// branches, the files inside a stash. The working copy no longer has one: its
+/// staged/unstaged split is carried by the checkboxes, not by group headers.
 struct GroupLabelRow: View {
     let title: String
-    /// The real number of changes in this group.
+    /// The real number of items in this group.
     let count: Int
     /// How many are actually rendered, when the display cap is in effect.
     var shown: Int?
@@ -84,7 +83,11 @@ struct GroupLabelRow: View {
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.tertiary)
         }
+        .padding(.horizontal, Space.lg)
         .frame(height: Metrics.groupLabelRow)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.headerFill.color)
+        .hairline(.bottom)
         .listRowSeparator(.hidden)
         .selectionDisabled()
     }
@@ -106,51 +109,124 @@ struct OverflowRow: View {
             Spacer()
         }
         .foregroundStyle(.secondary)
+        .padding(.horizontal, Space.lg)
         .frame(height: Metrics.fileRow)
-        .help("Grove renders at most \(RepoViewModel.displayRowCap) rows per group.")
+        .help("Grove renders at most \(RepoViewModel.displayRowCap) rows per repository.")
     }
 }
 
-/// A change as it appears in one particular group.
+// MARK: - Staging
+
+/// The checkbox that stages a file.
 ///
-/// A file that is staged *and* modified again appears in two groups at once, so
-/// the change's own id is not unique within the list. Two sibling `ForEach`es
-/// sharing an id makes SwiftUI treat them as the same element and drop one — it
-/// renders as a blank row. Qualifying the id with the group fixes it.
-struct ChangeRowItem: Identifiable {
-    let change: FileChange
-    let staged: Bool
-    var id: String { (staged ? "staged:" : "unstaged:") + change.displayPath }
+/// Drawn from symbols rather than using `Toggle(…).toggleStyle(.checkbox)`,
+/// because AppKit's checkbox has a mixed state and SwiftUI's `Toggle` has no way
+/// to reach it — and mixed is precisely the state worth drawing.
+struct StageCheckbox: View {
+    let state: StageState
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13))
+                .symbolRenderingMode(state == .off ? .monochrome : .palette)
+                .foregroundStyle(
+                    state == .off ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.white),
+                    AnyShapeStyle(Color.accentColor)
+                )
+                .frame(width: 16, height: 16)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Stage")
+        .accessibilityValue(accessibilityValue)
+        .help(help)
+    }
+
+    private var symbol: String {
+        switch state {
+        case .off: "square"
+        case .on: "checkmark.square.fill"
+        case .partial: "minus.square.fill"
+        }
+    }
+
+    private var accessibilityValue: String {
+        switch state {
+        case .off: "Not staged"
+        case .on: "Staged"
+        case .partial: "Partly staged"
+        }
+    }
+
+    private var help: String {
+        switch state {
+        case .off: "Stage this file"
+        case .on: "Unstage this file"
+        case .partial: "Staged, and edited again — stage the rest"
+        }
+    }
 }
 
-/// One changed file.
+/// The status letter, as a filled chip.
+///
+/// A bare coloured letter was legible but weightless; the chip gives the status
+/// column an edge to align against, which is what turns a list of file names
+/// into a table you can scan down.
+struct StatusBadge: View {
+    let letter: String
+    let tint: Color
+
+    var body: some View {
+        Text(letter)
+            .font(Typography.statusLetter)
+            .foregroundStyle(Palette.diffCanvas.color)
+            .frame(width: 16, height: 15)
+            .background(tint, in: .rect(cornerRadius: Radius.xs))
+            .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Rows
+
+/// One changed file, as a table row.
+///
+/// Square, full-bleed and separated by a hairline rather than floated on a
+/// rounded capsule: rows are the densest thing in the window and the eye needs
+/// a straight edge to run down. The only interactive element is the checkbox —
+/// everything else a file can have done to it is on the context menu, where a
+/// destructive action cannot be hit by a stray hover.
 struct ChangeRow: View {
     let change: FileChange
     let staged: Bool
-    var onStage: (() -> Void)?
+
+    /// `nil` in read-only lists — a commit's files, a stash's files, the
+    /// Overview. Those have nothing to stage.
+    var stageState: StageState?
+    var onToggleStage: (() -> Void)?
     var onDiscard: (() -> Void)?
+
     /// Whether this row's diff is the one on screen.
     var isSelected = false
     var onSelect: (() -> Void)?
 
-    /// Hover state is **local to the row** on purpose. Hoisting it into a
-    /// list-level `hoveredID` invalidates every row on every mouse move, which
-    /// is the most common way a SwiftUI sidebar becomes laggy.
-    @State private var isHovered = false
+    /// Drawn under every row but the last, which the list suppresses.
+    var showsSeparator = true
 
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
 
-    /// Width shared by the status letter and the hover buttons.
-    ///
-    /// Reserved up front so revealing the buttons swaps content in a fixed slot
-    /// rather than resizing the row — otherwise the filename shifts under the
-    /// cursor as you move down the list.
-    private var trailingSlotWidth: CGFloat { hasActions ? 46 : 14 }
-
-    private var hasActions: Bool { onStage != nil || onDiscard != nil }
-
     var body: some View {
         HStack(spacing: Space.sm) {
+            if let stageState {
+                StageCheckbox(state: stageState) { onToggleStage?() }
+            }
+
+            StatusBadge(
+                letter: change.statusLetter(staged: staged),
+                tint: change.tint(staged: staged)
+            )
+
             Text(change.singleLineFileName)
                 .font(Typography.fileName)
                 .lineLimit(1)
@@ -167,80 +243,32 @@ struct ChangeRow: View {
 
             Spacer(minLength: Space.xs)
 
-            // Status is encoded redundantly — letter, colour, and (in the diff)
-            // the +/- sign — so it survives both colour blindness and the
-            // Differentiate Without Color setting.
             if differentiateWithoutColor {
-                Rectangle()
-                    .fill(change.tint(staged: staged))
-                    .frame(width: 2, height: 12)
+                Text(change.statusLetter(staged: staged))
+                    .font(Typography.keyHint)
+                    .foregroundStyle(.secondary)
             }
-
-            trailingSlot
         }
+        .padding(.horizontal, Space.lg)
         .frame(height: Metrics.fileRow)
-        .padding(.horizontal, Space.xs)
-        .background {
-            if isSelected {
-                RoundedRectangle(cornerRadius: Radius.sm)
-                    .fill(.selection)
-            }
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isSelected ? AnyShapeStyle(.selection) : AnyShapeStyle(.clear))
+        .hairline(.bottom, color: showsSeparator ? Palette.rowSeparator.color : .clear)
         .contentShape(.rect)
         .opacity(change.worktreeStatus == .deleted && !staged ? 0.6 : 1)
-        .onHover { isHovered = $0 }
         .onTapGesture { onSelect?() }
-        .help(change.singleLineDisplayPath)
-    }
-
-    @ViewBuilder
-    private var trailingSlot: some View {
-        ZStack(alignment: .trailing) {
-            Text(change.statusLetter(staged: staged))
-                .font(Typography.statusLetter)
-                .foregroundStyle(change.tint(staged: staged))
-                .opacity(showActions ? 0 : 1)
-
-            if showActions {
-                HStack(spacing: Space.xs) {
-                    if let onDiscard {
-                        RowActionButton(
-                            symbol: "arrow.uturn.backward",
-                            help: "Discard changes",
-                            action: onDiscard
-                        )
-                    }
-                    if let onStage {
-                        RowActionButton(
-                            symbol: staged ? "minus" : "plus",
-                            help: staged ? "Unstage" : "Stage",
-                            action: onStage
-                        )
-                    }
-                }
+        .contextMenu {
+            if let onToggleStage, let stageState {
+                Button(stageState == .on ? "Unstage" : "Stage", action: onToggleStage)
+            }
+            if let onDiscard {
+                Button("Discard Changes…", role: .destructive, action: onDiscard)
+            }
+            Button("Copy Path") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(change.singleLineDisplayPath, forType: .string)
             }
         }
-        // Opacity only — never position. The slot keeps its width either way.
-        .animation(.easeOut(duration: 0.12), value: showActions)
-        .frame(width: trailingSlotWidth, alignment: .trailing)
-    }
-
-    private var showActions: Bool { isHovered && hasActions }
-}
-
-private struct RowActionButton: View {
-    let symbol: String
-    let help: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 10, weight: .semibold))
-                .frame(width: 18, height: 18)
-                .contentShape(.rect)
-        }
-        .buttonStyle(.borderless)
-        .help(help)
+        .help("\(change.singleLineDisplayPath)\n\(change.statusDescription)")
     }
 }

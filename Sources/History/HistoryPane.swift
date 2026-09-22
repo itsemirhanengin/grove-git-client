@@ -15,7 +15,6 @@ struct HistoryPane: View {
             commitList
 
             if repo.selectedCommit != nil {
-                Divider()
                 CommitDetail(repo: repo)
                     .frame(maxHeight: 280)
             }
@@ -59,7 +58,6 @@ struct HistoryPane: View {
                     .padding(.top, Space.xxxl)
                 }
             }
-            .padding(.bottom, Space.md)
         }
         .scrollEdgeEffectStyle(.hard, for: .top)
     }
@@ -107,11 +105,9 @@ private struct CommitRow: View {
         }
         .padding(.trailing, Space.lg)
         .frame(height: Metrics.fileRow)
-        .background {
-            if isSelected {
-                RoundedRectangle(cornerRadius: Radius.sm).fill(.selection)
-            }
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isSelected ? AnyShapeStyle(.selection) : AnyShapeStyle(.clear))
+        .hairline(.bottom, color: Palette.rowSeparator.color)
         .contentShape(.rect)
         .onTapGesture(perform: onSelect)
         .help(commit.oid)
@@ -195,7 +191,6 @@ private struct CommitDetail: View {
         VStack(alignment: .leading, spacing: 0) {
             if let commit = repo.selectedCommit {
                 header(commit)
-                Divider()
                 fileList
             }
         }
@@ -227,6 +222,8 @@ private struct CommitDetail: View {
         }
         .padding(Space.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.headerFill.color)
+        .hairline(.bottom)
     }
 
     private var fileList: some View {
@@ -249,7 +246,6 @@ private struct CommitDetail: View {
                             isSelected: repo.selectedCommitChange?.pathBytes == change.pathBytes,
                             onSelect: { repo.selectedCommitChange = change }
                         )
-                        .padding(.horizontal, Space.lg)
                     }
                 }
             }

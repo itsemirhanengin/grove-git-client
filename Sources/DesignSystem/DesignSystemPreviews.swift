@@ -131,7 +131,7 @@ struct GlassPreview: View {
                 HStack(spacing: Space.lg) {
                     Label("Fixtures", systemImage: "folder.fill")
                         .padding(.horizontal, Space.lg)
-                        .frame(height: Metrics.switcherPill)
+                        .frame(height: Metrics.paneHeader)
                         .appGlass(in: .capsule)
 
                     Button("Commit") {}
@@ -151,7 +151,7 @@ struct GlassPreview: View {
                 )
                 .opacity(0.5)
             )
-            .clipShape(.rect(cornerRadius: Radius.lg))
+            .clipShape(.rect(cornerRadius: Radius.md))
         }
         .environment(\.accessibilityOverride, override)
     }

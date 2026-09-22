@@ -13,32 +13,49 @@ enum Space {
     static let xxxl: CGFloat = 32
 }
 
-/// Corner radii. Nesting rule: an inner radius is the outer radius minus the
-/// padding between them, so a chip inside the 16pt panel with 8pt padding gets 8.
+/// Corner radii, and the deliberate absence of them.
+///
+/// Grove's panes are **square**: a header, a row, a table and a diff all run
+/// edge to edge and meet their neighbours on a hairline. Rounding is reserved
+/// for things that genuinely float free of the grid — a menu, a popover, a
+/// badge — which is why the scale stops at `md`.
 enum Radius {
+    static let xs: CGFloat = 3
     static let sm: CGFloat = 5
     static let md: CGFloat = 8
-    static let lg: CGFloat = 12
-    static let xl: CGFloat = 16
 }
 
-/// Fixed row and bar heights. Uniform heights are not a cosmetic choice — they
-/// are what lets the diff renderer turn scroll position into integer arithmetic.
+/// Fixed row and bar heights.
+///
+/// The one that matters most is ``paneHeader``. Every column — sidebar, file
+/// list, diff — opens with a header of exactly that height, so their bottom
+/// borders meet the vertical column dividers at the same y and the window reads
+/// as one grid rather than three stacked panes that happen to be adjacent.
 enum Metrics {
-    static let fileRow: CGFloat = 24
-    static let groupLabelRow: CGFloat = 20
-    static let sectionHeader: CGFloat = 28
-    static let accessoryBar: CGFloat = 32
-    static let switcherPill: CGFloat = 32
-    static let bar: CGFloat = 36
+    static let fileRow: CGFloat = 26
+    static let groupLabelRow: CGFloat = 22
 
-    static let sidebarMinWidth: CGFloat = 260
-    static let sidebarIdealWidth: CGFloat = 300
-    static let sidebarMaxWidth: CGFloat = 420
+    /// The header band shared by every column. Nothing else may be this tall.
+    static let paneHeader: CGFloat = 38
 
-    static let listMinWidth: CGFloat = 320
-    static let listIdealWidth: CGFloat = 380
-    static let listMaxWidth: CGFloat = 520
+    /// The thin summary rule above a table.
+    static let columnHeader: CGFloat = 22
+
+    /// The band that separates one repository's rows from the next one's in the
+    /// Overview. Between a column header and a pane header on purpose: it has to
+    /// win against a list of rows without competing with the pane's own header.
+    static let sectionBand: CGFloat = 28
+
+    /// The bar pinned to the bottom of a pane.
+    static let statusBar: CGFloat = 28
+
+    static let sidebarMinWidth: CGFloat = 240
+    static let sidebarIdealWidth: CGFloat = 264
+    static let sidebarMaxWidth: CGFloat = 380
+
+    static let listMinWidth: CGFloat = 340
+    static let listIdealWidth: CGFloat = 400
+    static let listMaxWidth: CGFloat = 560
 }
 
 /// Motion, funnelled through one place so Reduce Motion cannot be forgotten.

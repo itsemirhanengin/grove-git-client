@@ -84,15 +84,16 @@ struct DiffPane: View {
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Palette.diffCanvas.color)
+            .diffBackground()
             // `spacing: 0`, or the bar floats a gap below the toolbar and the
             // file name sits noticeably lower than the list beside it.
             .safeAreaBar(edge: .top, spacing: 0) { headerBar }
-            // The one bar Grove puts under a diff, and it is only there while
-            // rows are picked. A permanent footer was rejected — context width
-            // and unified/split belong in Settings — but an action on a live
-            // selection has nowhere else to be.
-            .safeAreaBar(edge: .bottom, spacing: 0) { selectionBar }
+            // One bar, always there. It used to appear only while rows were
+            // picked, which meant the diff shifted under the cursor at the exact
+            // moment you were pointing at a line. Now it states what the file
+            // changed, and grows actions on the right when there is a selection
+            // for them to act on.
+            .safeAreaBar(edge: .bottom, spacing: 0) { footerBar }
             .task(id: taskKey) { await load() }
     }
 
@@ -106,16 +107,7 @@ struct DiffPane: View {
     // MARK: Header
 
     private var headerBar: some View {
-        VStack(spacing: 0) {
-            titleRow
-            informationRow
-            Divider()
-        }
-        .background(.bar)
-    }
-
-    private var titleRow: some View {
-        HStack(spacing: Space.sm) {
+        PaneHeader {
             Image(systemName: symbol)
                 .font(.callout)
                 .foregroundStyle(change.tint(staged: selection.staged))
@@ -158,8 +150,6 @@ struct DiffPane: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, Space.lg)
-        .frame(height: 26)
     }
 
     private var stagedBinding: Binding<Bool> {
@@ -176,22 +166,6 @@ struct DiffPane: View {
         case .renamed, .copied: return "arrow.triangle.turn.up.right.diamond"
         default: return "doc.text"
         }
-    }
-
-    /// One dense line under the file name, the way Tower puts it: what happened,
-    /// and how much of it.
-    private var informationRow: some View {
-        HStack(spacing: Space.xs) {
-            Text(informationItems.joined(separator: "  ·  "))
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
-        }
-        .font(Typography.secondaryDetail.monospacedDigit())
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, Space.lg)
-        .padding(.bottom, Space.xs)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Counted from the patch text rather than parsed into a model.
@@ -285,43 +259,43 @@ struct DiffPane: View {
         )
     }
 
-    // MARK: - Staging a selection
+    // MARK: - Footer
 
-    /// Appears only while rows are picked.
+    /// The one bar under a diff: what the file changed, and — while rows are
+    /// picked — what to do with them.
     ///
     /// Everything here is real AppKit: the page reports what was selected and
     /// stops there, because turning a selection into a patch is git's job and
     /// git is on this side of the bridge.
-    @ViewBuilder
-    private var selectionBar: some View {
-        if !picked.isEmpty, origin == .workingCopy {
-            VStack(spacing: 0) {
-                Divider()
-                HStack(spacing: Space.md) {
-                    Text(countLabel)
-                        .font(Typography.secondaryDetail.monospacedDigit())
-                        .foregroundStyle(.secondary)
+    private var footerBar: some View {
+        StatusBar {
+            Text(picked.isEmpty ? informationSummary : countLabel)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
 
-                    Spacer(minLength: Space.md)
+            Spacer(minLength: Space.md)
 
-                    if canDiscard {
-                        Button("Discard", role: .destructive) {
-                            apply(picked.lines, .discard)
-                        }
-                    }
-
-                    Button(chunkTitle) { apply(picked.chunks, primaryOperation) }
-                        .disabled(repo.isBusy)
-
-                    Button(lineTitle) { apply(picked.lines, primaryOperation) }
-                        .buttonStyle(.glassProminent)
-                        .disabled(repo.isBusy)
+            if !picked.isEmpty, origin == .workingCopy {
+                if canDiscard {
+                    Button("Discard", role: .destructive) { apply(picked.lines, .discard) }
+                        .controlSize(.small)
                 }
-                .padding(.horizontal, Space.lg)
-                .frame(height: Metrics.bar)
+
+                Button(chunkTitle) { apply(picked.chunks, primaryOperation) }
+                    .controlSize(.small)
+                    .disabled(repo.isBusy)
+
+                Button(lineTitle) { apply(picked.lines, primaryOperation) }
+                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(repo.isBusy)
             }
-            .background(.bar)
         }
+    }
+
+    /// The header line and the running total, as one string.
+    private var informationSummary: String {
+        informationItems.joined(separator: "  ·  ")
     }
 
     /// Which way the picked lines move. The staged side can only send work

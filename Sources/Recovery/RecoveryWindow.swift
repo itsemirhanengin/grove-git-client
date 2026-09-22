@@ -67,8 +67,9 @@ struct RecoveryWindow: View {
             }
         }
         .padding(.horizontal, Space.lg)
-        .frame(height: Metrics.bar)
-        .background(.bar)
+        .frame(height: Metrics.paneHeader)
+        .background(Palette.headerFill.color)
+        .hairline(.bottom)
     }
 
     // MARK: Snapshots

@@ -670,19 +670,20 @@ private struct DetailColumn: View {
 
     var body: some View {
         if let repo = focusedRepo, isShowingHistory {
-            // History is read-only: the same diff view, pointed at a commit
-            // rather than at the working copy.
-            if let commit = repo.selectedCommit, let change = repo.selectedCommitChange {
-                DiffPane(
-                    repo: repo,
-                    selection: SelectedChange(change: change, staged: true),
-                    origin: .commit(commit.oid)
-                )
+            // History is a changeset, not a file: one commit, everything it
+            // touched, one scroll. Picking a file out of it first was a step
+            // that existed only because the pane could show one at a time.
+            if let commit = repo.selectedCommit {
+                // Deliberately **not** `.id(commit.oid)`. Giving it one would
+                // rebuild the pane for every commit clicked, and with it the
+                // `WKWebView` — a 650 kB renderer parsed again per click, for a
+                // surface whose whole design is to be handed new content.
+                CommitChangesetPane(repo: repo, commit: commit)
             } else {
                 EmptyDetail(
                     title: "No Commit Selected",
                     symbol: "clock",
-                    message: "Select a commit, then a file within it."
+                    message: "Select a commit to see everything it changed."
                 )
             }
         } else if let repo = focusedRepo, isShowingStashes {

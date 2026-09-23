@@ -120,6 +120,17 @@ enum Palette {
         light: 0xBC4C_00, lightHighContrast: 0x8F39_00,
         dark: 0xF088_3E, darkHighContrast: 0xFFA6_57)
 
+    /// Tags, and only tags.
+    ///
+    /// Gold rather than ``attention``'s orange, and the distance between them is
+    /// the point: a tag is the calmest thing that can be attached to a commit,
+    /// and giving it the warning colour would make every release look like a
+    /// problem. Dark in the light scheme and bright in the dark one, so a chip
+    /// filled with it takes ``diffCanvas`` as its text colour in either.
+    static let tag = Swatch(
+        light: 0x9A67_00, lightHighContrast: 0x7A52_00,
+        dark: 0xE3B3_41, darkHighContrast: 0xF2CC_60)
+
     // MARK: Diff surface
 
     /// Opaque by design — glass behind scrolling code is a readability and

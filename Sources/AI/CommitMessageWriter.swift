@@ -48,7 +48,9 @@ nonisolated struct CommitMessageWriter: Sendable {
 
     // MARK: Writing
 
-    func write(statistics: String, diff: String) async throws -> GeneratedCommitMessage {
+    func write(
+        statistics: String, diff: String, convention: CommitConvention = CommitConvention()
+    ) async throws -> GeneratedCommitMessage {
         guard !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CommitMessageError.nothingStaged
         }
@@ -56,7 +58,8 @@ nonisolated struct CommitMessageWriter: Sendable {
         if let claudeExecutable {
             do {
                 return try await writeWithClaude(
-                    executable: claudeExecutable, statistics: statistics, diff: diff)
+                    executable: claudeExecutable, statistics: statistics, diff: diff,
+                    convention: convention)
             } catch {
                 // Fall through to the on-device model rather than failing: no
                 // network, an expired login and a rate limit all land here, and
@@ -66,16 +69,18 @@ nonisolated struct CommitMessageWriter: Sendable {
         }
 
         guard OnDeviceWriter.isAvailable else { throw CommitMessageError.noProvider }
-        return try await OnDeviceWriter.write(statistics: statistics, diff: diff)
+        return try await OnDeviceWriter.write(
+            statistics: statistics, diff: diff, convention: convention)
     }
 
     private func writeWithClaude(
-        executable: URL, statistics: String, diff: String
+        executable: URL, statistics: String, diff: String, convention: CommitConvention
     ) async throws
         -> GeneratedCommitMessage
     {
         let (body, truncated) = CommitMessagePrompt.body(
-            statistics: statistics, diff: diff, limit: CommitMessagePrompt.remoteDiffLimit)
+            statistics: statistics, diff: diff, limit: CommitMessagePrompt.remoteDiffLimit,
+            convention: convention, subjectLimit: CommitMessagePrompt.remoteSubjectLimit)
 
         do {
             let text = try await ask(executable: executable, body: body, arguments: Self.arguments)

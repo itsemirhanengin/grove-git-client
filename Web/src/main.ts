@@ -2,17 +2,21 @@ import './grove.css'
 import { FileDiff, UnresolvedFile, processFile } from '@pierre/diffs'
 import type { FileDiffMetadata, SelectedLineRange } from '@pierre/diffs'
 
-/// What Swift sends when the selected file, the staged side, or the context
-/// width changes. `generation` is the cache key: `@pierre/diffs` memoises
-/// rendered output per key, so it has to change whenever the patch does.
+import { ChangesetView, type ChangesetPayload } from './changeset'
+import { DIFF_THEMES, SHADOW_CSS, applyChrome, type GroveAppearance } from './theme'
+
+/// The page renders three documents, one at a time: a single file's diff, a
+/// whole commit, and a conflicted file. Grove draws everything around them.
+
+/// One file, as the working copy and the stash panes show it. `generation` is
+/// the cache key: `@pierre/diffs` memoises rendered output per key, so it has to
+/// change whenever the patch does.
 interface RenderPayload {
   patch: string
   fileName: string
   diffStyle: 'unified' | 'split'
-  themeType: 'light' | 'dark'
-  fontSize: number
-  canvas: string
   generation: number
+  appearance: GroveAppearance
 }
 
 /// A conflicted file, sent as the working-tree text *with its conflict markers
@@ -21,16 +25,17 @@ interface RenderPayload {
 interface ConflictPayload {
   fileName: string
   contents: string
-  themeType: 'light' | 'dark'
-  fontSize: number
-  canvas: string
   generation: number
+  appearance: GroveAppearance
 }
 
 interface GroveBridge {
   render(payload: string): void
+  renderChangeset(payload: string): void
   renderConflict(payload: string): void
-  setThemeType(themeType: 'light' | 'dark', canvas: string): void
+  setChangesetCollapsed(collapsed: boolean): void
+  scrollToChangesetFile(id: string): void
+  setAppearance(appearance: string): void
   clearSelection(): void
 }
 
@@ -51,98 +56,37 @@ function send(message: Record<string, unknown>): void {
 }
 
 const container = document.getElementById('diff')
-if (!container) throw new Error('missing #diff container')
+const changesetRoot = document.getElementById('changeset')
+if (!container || !changesetRoot) throw new Error('missing renderer containers')
 
 let component: FileDiff | undefined
 let conflictComponent: UnresolvedFile | undefined
 /// Which file the live `UnresolvedFile` was built for. See `renderConflict`.
 let conflictKey: string | undefined
-let lastPayload: RenderPayload | undefined
+let changeset: ChangesetView | undefined
+let appearance: GroveAppearance | undefined
 
-/// Only one of the two components may own the container at a time — they both
-/// create their own `<diffs-container>`, and leaving the other one mounted
-/// stacks two files on top of each other.
-function tearDownOthers(keep: 'diff' | 'conflict'): void {
-  if (keep !== 'diff' && component) {
+/// Which of the three documents owns the page.
+type Mode = 'diff' | 'changeset' | 'conflict'
+
+/// Only one document may be visible at a time — each builds its own
+/// `<diffs-container>`, and leaving another mounted stacks two files on top of
+/// each other. The changeset is torn down rather than hidden: it is the one that
+/// can be holding thousands of parsed files.
+function activate(mode: Mode): void {
+  container!.hidden = mode === 'changeset'
+  changesetRoot!.hidden = mode !== 'changeset'
+
+  if (mode !== 'diff' && component) {
     component.cleanUp()
     component = undefined
   }
-  if (keep !== 'conflict' && conflictComponent) {
+  if (mode !== 'conflict' && conflictComponent) {
     conflictComponent.cleanUp()
     conflictComponent = undefined
     conflictKey = undefined
   }
-}
-
-/// The library styles itself from `--diffs-*` custom properties declared on
-/// `:host` inside its shadow root. Custom properties inherit *through* a shadow
-/// boundary, so setting them on the document element is enough to drive the
-/// component without reaching into its shadow DOM.
-function applyChrome(payload: Pick<RenderPayload, 'canvas' | 'fontSize'>): void {
-  const root = document.documentElement
-  const lineHeight = Math.round(payload.fontSize * 1.6)
-
-  root.style.setProperty('--grove-canvas', payload.canvas)
-  root.style.setProperty('--diffs-font-size', `${payload.fontSize}px`)
-  root.style.setProperty('--diffs-line-height', `${lineHeight}px`)
-  root.style.setProperty('--diffs-light-bg', payload.canvas)
-  root.style.setProperty('--diffs-dark-bg', payload.canvas)
-
-  // Full bleed. The library pads its diff on all four sides, which inside a
-  // native pane reads as the diff being a card floating in the column rather
-  // than the column's content — line numbers start in mid-air, and the
-  // highlighted background of a changed line stops short of both edges. Zeroing
-  // both gaps lands the gutter on the pane's left border and lets an added line
-  // run the full width, which is what every native diff viewer does.
-  root.style.setProperty('--diffs-gap-inline', '0px')
-  root.style.setProperty('--diffs-gap-block', '0px')
-}
-
-/// Squares off the corners the library rounds inside its own shadow root.
-///
-/// Two of them: the "N unmodified lines" separator and the word-level highlight
-/// within a changed line. Both are hardcoded pixel radii rather than custom
-/// properties, so there is no variable to set — and a shadow root is opaque to
-/// the document's stylesheet, so `grove.css` cannot reach them either.
-///
-/// The gutter's `+` button keeps its radius on purpose. Everything else here is
-/// a *surface*, and surfaces in Grove are square; that is a control, and a
-/// control that looks pressable is doing its job.
-///
-/// It can still be done cleanly because the component attaches its shadow root
-/// `open` and styles itself through `adoptedStyleSheets`: appending one more
-/// sheet to that array is the supported way to extend it, and it survives the
-/// library restyling itself.
-const SQUARE_CORNERS = `
-  [data-separator="line-info"] [data-separator-content],
-  [data-separator="line-info-basic"] [data-separator-content] { border-radius: 0; }
-  [data-diff-span] { border-radius: 0; }
-  [data-code]::-webkit-scrollbar-thumb { border-radius: 0; }
-`
-
-let squareSheet: CSSStyleSheet | undefined
-
-function applySquareCorners(attempt = 0): void {
-  const host = container!.querySelector('diffs-container')
-  const root = host?.shadowRoot
-  if (!root) {
-    // The custom element attaches its shadow root when it connects, which is
-    // synchronous — but only once the element definition has been upgraded. On
-    // the very first render that can land a frame late, and giving up silently
-    // would leave exactly one diff per launch with rounded corners.
-    if (attempt < 10) requestAnimationFrame(() => applySquareCorners(attempt + 1))
-    return
-  }
-
-  if (!squareSheet) {
-    squareSheet = new CSSStyleSheet()
-    squareSheet.replaceSync(SQUARE_CORNERS)
-  }
-  if (!root.adoptedStyleSheets.includes(squareSheet)) {
-    // Appended, never assigned: the library's own sheet is already in there and
-    // replacing the array would render the diff unstyled.
-    root.adoptedStyleSheets = [...root.adoptedStyleSheets, squareSheet]
-  }
+  if (mode !== 'changeset') changeset?.clear()
 }
 
 function showNotice(text: string): void {
@@ -153,18 +97,24 @@ function showNotice(text: string): void {
   container!.append(notice)
 }
 
-function render(raw: string): void {
-  let payload: RenderPayload
+function parse<T>(raw: string, what: string): T | undefined {
   try {
-    payload = JSON.parse(raw) as RenderPayload
+    return JSON.parse(raw) as T
   } catch (error) {
-    send({ type: 'error', message: `bad payload: ${String(error)}` })
-    return
+    send({ type: 'error', message: `bad ${what} payload: ${String(error)}` })
+    return undefined
   }
+}
 
-  lastPayload = payload
-  applyChrome(payload)
-  tearDownOthers('diff')
+// MARK: - One file
+
+function render(raw: string): void {
+  const payload = parse<RenderPayload>(raw, 'diff')
+  if (payload == null) return
+
+  appearance = payload.appearance
+  applyChrome(payload.appearance)
+  activate('diff')
 
   if (payload.patch.trim().length === 0) {
     component?.cleanUp()
@@ -197,7 +147,9 @@ function render(raw: string): void {
 
   const options = {
     // Grove draws the file name, the staged switch and the counts itself, in
-    // real AppKit controls. The web layer renders the diff and nothing else.
+    // real AppKit controls. Here the web layer renders the diff and nothing
+    // else — unlike the changeset, where the header is the disclosure and has
+    // to live beside the file it opens.
     disableFileHeader: true,
     diffStyle: payload.diffStyle,
     diffIndicators: 'classic' as const,
@@ -205,11 +157,9 @@ function render(raw: string): void {
     // A diff line is a unit; wrapping it breaks its correspondence with the
     // line number beside it.
     overflow: 'scroll' as const,
-    themeType: payload.themeType,
-    theme: {
-      light: 'github-light-default',
-      dark: 'github-dark-default',
-    },
+    themeType: payload.appearance.themeType,
+    theme: DIFF_THEMES,
+    unsafeCSS: SHADOW_CSS,
     // Line staging starts here and ends here: the page reports which rows were
     // picked and does nothing else with them. Turning a selection into a patch
     // is git's business, and git lives on the Swift side of the bridge.
@@ -242,7 +192,6 @@ function render(raw: string): void {
   // root is where all of its `:host` styling lives — so the diff renders with
   // no grid, no colours and no alignment at all.
   component.render({ fileDiff: metadata, containerWrapper: container! })
-  applySquareCorners()
 
   // A selection means line numbers in *this* diff. Carrying one across a file
   // change would hand Swift a range that points into a document nobody is
@@ -252,34 +201,49 @@ function render(raw: string): void {
   send({ type: 'rendered', lines: metadata.hunks?.length ?? 0 })
 }
 
-/// The conflict resolver.
-///
+// MARK: - One commit
+
+function renderChangeset(raw: string): void {
+  const payload = parse<ChangesetPayload>(raw, 'changeset')
+  if (payload == null) return
+
+  appearance = payload.appearance
+  activate('changeset')
+
+  changeset ??= new ChangesetView(changesetRoot!, send)
+  changeset.render(payload)
+}
+
+function setChangesetCollapsed(collapsed: boolean): void {
+  changeset?.setAllCollapsed(collapsed)
+}
+
+function scrollToChangesetFile(id: string): void {
+  changeset?.scrollToFile(id)
+}
+
+// MARK: - One conflict
+
 /// `UnresolvedFile` is the library's own: it parses the conflict markers, draws
 /// each region with Accept Current / Incoming / Both buttons, and hands back the
 /// **whole resolved file** when one is taken. Swift writes that to disk — the
 /// page never touches the filesystem and never decides what "resolved" means.
 function renderConflict(raw: string): void {
-  let payload: ConflictPayload
-  try {
-    payload = JSON.parse(raw) as ConflictPayload
-  } catch (error) {
-    send({ type: 'error', message: `bad conflict payload: ${String(error)}` })
-    return
-  }
+  const payload = parse<ConflictPayload>(raw, 'conflict')
+  if (payload == null) return
 
-  applyChrome(payload)
-  tearDownOthers('conflict')
+  appearance = payload.appearance
+  applyChrome(payload.appearance)
+  activate('conflict')
 
   const options = {
     disableFileHeader: true,
     diffIndicators: 'classic' as const,
     hunkSeparators: 'line-info' as const,
     overflow: 'scroll' as const,
-    themeType: payload.themeType,
-    theme: {
-      light: 'github-light-default',
-      dark: 'github-dark-default',
-    },
+    themeType: payload.appearance.themeType,
+    theme: DIFF_THEMES,
+    unsafeCSS: SHADOW_CSS,
     // The library's own buttons, in the gutter of each conflict region. Drawing
     // our own would mean re-deriving where every region starts, which is the
     // one thing it has already done.
@@ -323,19 +287,23 @@ function renderConflict(raw: string): void {
     return
   }
 
-  applySquareCorners()
-
   send({ type: 'rendered', lines: 0 })
 }
 
-function setThemeType(themeType: 'light' | 'dark', canvas: string): void {
-  if (lastPayload) {
-    lastPayload.themeType = themeType
-    lastPayload.canvas = canvas
-    applyChrome(lastPayload)
-  }
-  component?.setThemeType(themeType)
-  conflictComponent?.setThemeType(themeType)
+// MARK: - Appearance
+
+/// A light/dark flip, applied without rebuilding any document. Rebuilding one
+/// would throw away the scroll position at the exact moment the window is
+/// already changing under the reader.
+function setAppearance(raw: string): void {
+  const next = parse<GroveAppearance>(raw, 'appearance')
+  if (next == null) return
+
+  appearance = next
+  applyChrome(next)
+  component?.setThemeType(next.themeType)
+  conflictComponent?.setThemeType(next.themeType)
+  changeset?.setAppearance(next)
 }
 
 /// Called after a staging operation, so the rows that were just consumed stop
@@ -344,7 +312,15 @@ function clearSelection(): void {
   component?.setSelectedLines(null, { notify: false })
 }
 
-window.grove = { render, renderConflict, setThemeType, clearSelection }
+window.grove = {
+  render,
+  renderChangeset,
+  renderConflict,
+  setChangesetCollapsed,
+  scrollToChangesetFile,
+  setAppearance,
+  clearSelection,
+}
 
 // Swift holds its first payload until this lands: `loadFileURL` is asynchronous
 // and evaluating into the page before the module has run does nothing.

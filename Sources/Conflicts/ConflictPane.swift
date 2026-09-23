@@ -172,10 +172,8 @@ struct ConflictPane: View {
         ConflictPayload(
             fileName: change.displayPath,
             contents: contents,
-            themeType: colorScheme == .dark ? .dark : .light,
-            fontSize: Typography.diffSize,
-            canvas: Palette.diffCanvas.hexString(for: colorScheme),
-            generation: generation
+            generation: generation,
+            appearance: .resolved(for: colorScheme)
         )
     }
 

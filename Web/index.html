@@ -22,7 +22,12 @@
     </style>
   </head>
   <body>
+    <!-- Two containers, one visible at a time. `#diff` is a single file and
+         lets the page itself scroll; `#changeset` is a whole commit and owns
+         its own scroller, because CodeView virtualizes against the element it
+         is set up on. -->
     <div id="diff"></div>
+    <div id="changeset" hidden></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

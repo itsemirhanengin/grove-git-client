@@ -203,6 +203,101 @@ struct CommitMessageTests {
         #expect(!summary.diff.contains("b.txt"))
     }
 
+    // MARK: Repository convention
+
+    /// A repository that enforces Conventional Commits rejects a subject
+    /// without a type, so the writer has to be told the rules exist.
+    @Test("puts the rules and recent subjects ahead of the diff")
+    func conventionInPrompt() throws {
+        let convention = CommitConvention(
+            rules: [.init(name: "commitlint.config.js", contents: "extends: ['@commitlint/config-conventional']")],
+            recentSubjects: (1...20).map { "feat: change \($0)" })
+
+        let (text, _) = CommitMessagePrompt.body(
+            statistics: "a.txt | 1 +", diff: "+two", limit: 1 << 10,
+            convention: convention, subjectLimit: 5)
+
+        #expect(text.contains("--- BEGIN commitlint.config.js ---"))
+        #expect(text.contains("@commitlint/config-conventional"))
+        #expect(text.contains("- feat: change 5"))
+        #expect(!text.contains("- feat: change 6"))
+        let rules = try #require(text.range(of: "commitlint.config.js"))
+        let diff = try #require(text.range(of: "--- BEGIN DIFF ---"))
+        #expect(rules.lowerBound < diff.lowerBound)
+    }
+
+    @Test("with no convention, the prompt is just the change")
+    func noConvention() {
+        let (text, _) = CommitMessagePrompt.body(statistics: "a.txt | 1 +", diff: "+two", limit: 1 << 10)
+        #expect(text.hasPrefix("Files changed:"))
+    }
+
+    @Test("the instructions put the repository's convention first")
+    func instructionsDeferToConvention() {
+        #expect(CommitMessagePrompt.instructions.contains("convention comes first"))
+        #expect(CommitMessagePrompt.instructions.contains("Conventional Commits"))
+    }
+
+    @Test("reads commitlint config from the root, or from package.json")
+    func findsRules() throws {
+        let root = URL(filePath: NSTemporaryDirectory())
+            .appending(path: "grove-convention-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        #expect(CommitConvention.rulesFiles(at: root).isEmpty)
+
+        try #"{"name":"x","commitlint":{"extends":["@commitlint/config-conventional"]}}"#
+            .write(to: root.appending(path: "package.json"), atomically: true, encoding: .utf8)
+        let embedded = CommitConvention.rulesFiles(at: root)
+        #expect(embedded.count == 1)
+        #expect(embedded.first?.contents.contains("config-conventional") == true)
+
+        try "export default { extends: ['@commitlint/config-conventional'] }"
+            .write(to: root.appending(path: "commitlint.config.js"), atomically: true, encoding: .utf8)
+        // A config file wins; package.json is only where commitlint looks when
+        // there is none.
+        #expect(CommitConvention.rulesFiles(at: root).map(\.name) == ["commitlint.config.js"])
+    }
+
+    @Test("reads recent subjects from real git, newest first and without merges")
+    func conventionFromGit() async throws {
+        let root = URL(filePath: NSTemporaryDirectory())
+            .appending(path: "grove-convention-git-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let runner = GitRunner(environment: await GitEnvironment.resolve())
+        let engine = RepoEngine(
+            repository: Repository(
+                root: root, gitPath: root.appending(path: ".git"), kind: .standard, depth: 0),
+            runner: runner, limiter: GitTaskLimiter(capacity: 4))
+
+        // An unborn branch has no history to learn from, and that is not an error.
+        _ = try await runner.write(["init", "--initial-branch=main"], in: root)
+        #expect(await engine.commitConvention().recentSubjects.isEmpty)
+
+        for arguments in [
+            ["config", "user.email", "grove@test.invalid"],
+            ["config", "user.name", "Grove Test"],
+            ["commit", "--allow-empty", "-m", "feat: first"],
+            ["commit", "--allow-empty", "-m", "fix(api): second"],
+            ["checkout", "-b", "side"],
+            ["commit", "--allow-empty", "-m", "chore: side"],
+            ["checkout", "main"],
+            ["merge", "--no-ff", "-m", "Merge branch 'side'", "side"],
+        ] {
+            let result = try await runner.write(arguments, in: root)
+            #expect(result.didSucceed)
+        }
+
+        let convention = await engine.commitConvention()
+        // Commits made in the same second have no reliable order between them;
+        // what matters is that the merge commit is left out.
+        #expect(convention.recentSubjects.count == 3)
+        #expect(Set(convention.recentSubjects) == ["chore: side", "fix(api): second", "feat: first"])
+    }
+
     // MARK: Providers
 
     /// A GUI app inherits launchd's minimal PATH, which does not include

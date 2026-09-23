@@ -35,6 +35,18 @@ enum Metrics {
     static let fileRow: CGFloat = 26
     static let groupLabelRow: CGFloat = 22
 
+    /// A commit in the history list. Taller than a file row because it carries
+    /// two lines: who and when above, what and which id below. One line forced
+    /// author, date, subject and hash into a single run of text where nothing
+    /// had a column of its own and everything competed for the same width.
+    ///
+    /// Two lines need room to read as two lines. 38pt fitted them and nothing
+    /// else: the avatar came out smaller than the text beside it, the rail had
+    /// no gutter of its own, and the identity line sat on the subject. Density
+    /// is not the goal here — a commit is the unit being scanned, and it has to
+    /// look like one thing rather than four stacked ones.
+    static let commitRow: CGFloat = 48
+
     /// The header band shared by every column. Nothing else may be this tall.
     static let paneHeader: CGFloat = 38
 

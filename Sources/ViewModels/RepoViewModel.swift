@@ -167,6 +167,7 @@ final class RepoViewModel: Identifiable {
                 return "This chunk ends without a newline — take all of it at once"
             case .wholeFileOnly: return "This file is added or removed as a whole"
             }
+        case .hookRejected: return "A git hook rejected the commit"
         case .commandFailed(_, _, let stderr):
             return stderr.split(separator: "\n").first.map(String.init) ?? "git failed"
         }
@@ -622,9 +623,12 @@ final class RepoViewModel: Identifiable {
             defer { self.isGeneratingMessage = false }
 
             do {
-                let summary = try await self.engine.stagedSummary()
+                async let summary = self.engine.stagedSummary()
+                async let convention = self.engine.commitConvention()
+                let staged = try await summary
                 let generated = try await messageWriter.write(
-                    statistics: summary.statistics, diff: summary.diff)
+                    statistics: staged.statistics, diff: staged.diff,
+                    convention: await convention)
                 self.draftMessage = generated.text
                 self.lastGeneratedMessage = generated
             } catch let error as CommitMessageError {
@@ -769,6 +773,22 @@ final class RepoViewModel: Identifiable {
     private(set) var selectedCommitMessage = ""
     private(set) var selectedCommitChanges: [FileChange] = []
 
+    /// The selected commit as one patch, which is what the changeset view
+    /// renders. Empty until it arrives, and empty again the instant another
+    /// commit is picked.
+    private(set) var selectedCommitPatch = ""
+
+    /// The summary line above the file list. Loaded with the message rather
+    /// than with the patch, because it is the header's content and the header
+    /// should not wait on the diff.
+    private(set) var selectedCommitStats = CommitStats()
+
+    /// True between picking a commit and its patch landing. The header is
+    /// already drawn by then; this only governs the diff area.
+    private(set) var isLoadingCommitPatch = false
+
+    private(set) var commitPatchError: String?
+
     func loadHistory() async {
         guard commits.isEmpty, !isLoadingHistory else { return }
         await fetchHistoryPage(reset: true)
@@ -805,22 +825,47 @@ final class RepoViewModel: Identifiable {
             commits.map { CommitGraphNode(id: $0.oid, parents: $0.parents) })
     }
 
+    /// Loads everything the changeset view shows, in two waves.
+    ///
+    /// The message, the file list and the counts are three small commands and
+    /// arrive together — that is the whole header, and it is on screen while
+    /// git is still reading the patch. The patch itself is the one thing here
+    /// with no upper bound, so it is awaited separately and the diff area
+    /// spends that time showing that it is loading rather than the header
+    /// spending it blank.
     func selectCommit(_ commit: CommitInfo) async {
         selectedCommit = commit
         selectedCommitChange = nil
         selectedCommitMessage = ""
         selectedCommitChanges = []
+        selectedCommitPatch = ""
+        selectedCommitStats = CommitStats()
+        commitPatchError = nil
+        isLoadingCommitPatch = true
 
         async let message = try? engine.commitMessage(commit.oid)
         async let changes = try? engine.commitChanges(commit.oid)
+        async let stats = try? engine.commitStats(commit.oid)
 
-        let (loadedMessage, loadedChanges) = await (message, changes)
+        let (loadedMessage, loadedChanges, loadedStats) = await (message, changes, stats)
         // The user may have moved on while git was working.
         guard selectedCommit?.oid == commit.oid else { return }
 
         selectedCommitMessage = loadedMessage ?? ""
         selectedCommitChanges = loadedChanges ?? []
         selectedCommitChange = selectedCommitChanges.first
+        selectedCommitStats = loadedStats ?? CommitStats()
+
+        do {
+            let patch = try await engine.commitPatch(commit.oid)
+            guard selectedCommit?.oid == commit.oid else { return }
+            selectedCommitPatch = patch
+        } catch {
+            guard selectedCommit?.oid == commit.oid else { return }
+            commitPatchError = (error as? GitError).map(Self.message(for:)) ?? "\(error)"
+        }
+
+        isLoadingCommitPatch = false
     }
 
     func commitDiff(

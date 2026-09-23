@@ -10,6 +10,9 @@ import SwiftUI
 struct RepoOperationAlerts: ViewModifier {
     let repo: RepoViewModel?
 
+    /// The full output of the last failure, once someone asks to see it.
+    @State private var log: FailureLog?
+
     func body(content: Content) -> some View {
         content
             .confirmationDialog(
@@ -63,15 +66,31 @@ struct RepoOperationAlerts: ViewModifier {
                     Button("Cancel", role: .cancel) { repo?.operationError = nil }
                 } else {
                     Button("OK") { repo?.operationError = nil }
+                    if let output = fullLog(for: error) {
+                        Button("Show Log") {
+                            let title = errorTitle
+                            repo?.operationError = nil
+                            // Presented on the next turn, once the alert is
+                            // gone: one presentation replacing another in the
+                            // same update is what SwiftUI drops.
+                            Task { @MainActor in log = FailureLog(title: title, text: output) }
+                        }
+                    }
                 }
             } message: { error in
                 Text(message(for: error))
             }
+            .sheet(item: $log) { log in
+                FailureLogSheet(log: log)
+            }
     }
 
     private var errorTitle: String {
-        if case .notFastForward = repo?.operationError { return "The branch has diverged" }
-        return "Operation failed"
+        switch repo?.operationError {
+        case .notFastForward: "The branch has diverged"
+        case .hookRejected: "A git hook rejected the commit"
+        default: "Operation failed"
+        }
     }
 
     private func mergeMessage(for receipt: RepoViewModel.MergeReceipt) -> String {
@@ -168,13 +187,24 @@ struct RepoOperationAlerts: ViewModifier {
         return lines.joined(separator: "\n\n")
     }
 
+    /// A few lines at most. An alert cannot scroll, so a hook's whole output
+    /// here pushes the buttons off the screen — the rest is behind Show Log.
     private func message(for error: GitError) -> String {
         switch error {
+        case .hookRejected(let output):
+            output.isEmpty
+                ? "The hook printed nothing." : TerminalText.excerpt(of: output)
         case .commandFailed(let command, _, let stderr):
-            stderr.isEmpty ? command : stderr
+            stderr.isEmpty ? command : TerminalText.excerpt(of: stderr)
         default:
             RepoViewModel.message(for: error)
         }
+    }
+
+    /// The output behind the summary, when the summary left some of it out.
+    private func fullLog(for error: GitError) -> String? {
+        guard let output = error.output else { return nil }
+        return message(for: error) == output ? nil : output
     }
 
     // MARK: Presentation bindings

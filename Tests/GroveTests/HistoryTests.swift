@@ -83,6 +83,61 @@ struct HistoryTests {
         #expect(commits[0].date != nil)
     }
 
+    /// A stash is a merge commit that is not history.
+    ///
+    /// `--all` includes `refs/stash`, so stashing put two commits nobody wrote
+    /// into the list — and because they are merges, they forked the graph rail
+    /// into a knot beside them. Grove has a Stashes section; this is the guard
+    /// that they stay in it.
+    @Test("stashes and Grove's own backup refs stay out of the history")
+    func historyExcludesStashesAndBackups() async throws {
+        let lab = try await makeLab()
+        defer { lab.tearDown() }
+
+        try lab.write("a.txt", "one\n")
+        try await lab.git("add", "-A")
+        try await lab.git("commit", "-m", "first")
+
+        try lab.write("a.txt", "stash me\n")
+        try await lab.git("stash", "push", "-m", "work in progress")
+
+        // The shape of a ref Grove writes before a discard, so it can be undone.
+        let head = try await lab.git("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        try await lab.git("update-ref", "refs/grove/backup/1234567890", head)
+
+        let commits = try await lab.engine.log()
+        #expect(commits.count == 1, "only the real commit")
+        #expect(!commits.contains { $0.subject.hasPrefix("WIP on") })
+        #expect(!commits.contains { $0.subject.hasPrefix("index on") })
+    }
+
+    /// The badge colours are driven by the ref's kind, so the kind has to come
+    /// from the ref's full path. With short decoration a local `feature/login`
+    /// and a remote `origin/main` are the same string.
+    @Test("refs are classified into HEAD, branches, tags and remotes")
+    func refClassification() async throws {
+        let lab = try await makeLab()
+        defer { lab.tearDown() }
+
+        try lab.write("a.txt", "one\n")
+        try await lab.git("add", "-A")
+        try await lab.git("commit", "-m", "first")
+        try await lab.git("tag", "v1.0.0")
+        try await lab.git("branch", "feature/login")
+
+        let head = try #require(try await lab.engine.log().first)
+        let kinds = Dictionary(grouping: head.refs, by: \.kind).mapValues { $0.map(\.name) }
+
+        #expect(kinds[.head] == ["HEAD"], "HEAD is its own badge, not merged into the branch")
+        #expect(kinds[.branch]?.sorted() == ["feature/login", "main"])
+        #expect(
+            kinds[.tag] == ["v1.0.0"],
+            "a tag keeps its name without git's `tag: ` prefix")
+        #expect(
+            kinds[.branch]?.contains("feature/login") == true,
+            "a slash in a local branch must not make it a remote")
+    }
+
     /// A subject is free text. It must not be able to end a record early or
     /// swallow the next one.
     @Test("a subject full of punctuation survives the round trip")

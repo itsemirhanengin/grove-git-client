@@ -47,10 +47,8 @@ struct DiffRenderingTests {
             patch: patch,
             fileName: "src/venue.js",
             diffStyle: style,
-            themeType: .dark,
-            fontSize: 11.5,
-            canvas: "#0D1117",
-            generation: 1
+            generation: 1,
+            appearance: .resolved(for: .dark)
         )
     }
 

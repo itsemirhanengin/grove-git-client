@@ -29,6 +29,9 @@ nonisolated enum GitError: Error, Sendable, Equatable {
     /// The selection could not be turned into a patch at all — see
     /// ``PatchBuildError`` for which of the handful of reasons.
     case cannotSplitPatch(PatchBuildError)
+    /// A `pre-commit`, `prepare-commit-msg` or `commit-msg` hook refused the
+    /// commit. Carries the hook's output, which is the only place that says why.
+    case hookRejected(String)
     case commandFailed(command: String, exitCode: Int32, stderr: String)
 
     /// Classifies a failed invocation from its stderr.
@@ -42,10 +45,14 @@ nonisolated enum GitError: Error, Sendable, Equatable {
         default: break
         }
 
-        let stderr = result.stderrText
+        let stderr = TerminalText.clean(result.stderrText)
 
         if stderr.contains("not a git repository") { return .notARepository }
-        if stderr.contains("nothing to commit") || stderr.contains("no changes added to commit") {
+        // `git commit` says this on stdout, not stderr.
+        let committed = stderr + "\n" + result.stdoutText
+        if committed.contains("nothing to commit") || committed.contains("no changes added to commit")
+            || committed.contains("nothing added to commit")
+        {
             return .nothingToCommit
         }
         if stderr.contains("could not read Username")
@@ -86,6 +93,23 @@ nonisolated enum GitError: Error, Sendable, Equatable {
             exitCode: result.exitCode,
             stderr: stderr
         )
+    }
+}
+
+extension GitError {
+    /// What git — or a hook — printed, for the errors that carry it. This is the
+    /// full log behind an alert's one-line summary.
+    var output: String? {
+        switch self {
+        case .authenticationRequired(let text), .networkUnreachable(let text),
+            .localChangesWouldBeOverwritten(let text), .patchDoesNotApply(let text),
+            .hookRejected(let text):
+            text.isEmpty ? nil : text
+        case .commandFailed(_, _, let stderr):
+            stderr.isEmpty ? nil : stderr
+        default:
+            nil
+        }
     }
 }
 
@@ -309,7 +333,35 @@ actor RepoEngine {
         }
 
         guard result.didSucceed else {
-            throw GitError.classify(result, command: arguments)
+            let error = GitError.classify(result, command: arguments)
+            // git does not say that a hook failed — it just exits 1 with the
+            // hook's output as stderr. A commit that failed for no reason git
+            // names, in a repository that has commit hooks, is the hook.
+            if case .commandFailed(_, _, let output) = error, await hasCommitHooks() {
+                throw GitError.hookRejected(output)
+            }
+            throw error
+        }
+    }
+
+    /// Whether any hook that can refuse a commit is installed.
+    ///
+    /// `--git-path hooks` rather than `.git/hooks`: it honours `core.hooksPath`,
+    /// which is how husky and lefthook are often wired up, and resolves a
+    /// worktree's shared hooks directory.
+    private func hasCommitHooks() async -> Bool {
+        guard
+            let result = try? await runner.read(
+                ["rev-parse", "--git-path", "hooks"], in: repository.root),
+            result.didSucceed
+        else { return false }
+
+        let path = result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Relative to the repository root unless git made it absolute.
+        let directory =
+            path.hasPrefix("/") ? URL(filePath: path) : repository.root.appending(path: path)
+        return ["pre-commit", "prepare-commit-msg", "commit-msg"].contains {
+            FileManager.default.isExecutableFile(atPath: directory.appending(path: $0).path())
         }
     }
 
@@ -839,6 +891,25 @@ actor RepoEngine {
         return (statResult.stdoutText, patchResult.stdoutText)
     }
 
+    /// How this repository writes its commit messages: its commitlint rules,
+    /// if any, and the subjects of its recent commits. See ``CommitConvention``.
+    ///
+    /// Never throws. A convention is a hint for the writer — a repository with
+    /// no history or an unreadable config just gets the default style.
+    func commitConvention(subjectCount: Int = 15) async -> CommitConvention {
+        var convention = CommitConvention(rules: CommitConvention.rulesFiles(at: repository.root))
+        guard await headExists() else { return convention }
+
+        let arguments = ["log", "-n", "\(subjectCount)", "--no-merges", "--format=%s", "HEAD"]
+        if let result = try? await limiter.withSlot({
+            try await runner.read(arguments, in: repository.root)
+        }), result.didSucceed {
+            convention.recentSubjects = result.stdoutText
+                .split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        }
+        return convention
+    }
+
     // MARK: - History
 
     /// One page of history, newest first.
@@ -854,11 +925,24 @@ actor RepoEngine {
         guard await headExists() else { return [] }
 
         var arguments = [
-            "log", "--topo-order", "--decorate=short",
+            // `full`, not `short`: short decoration prints a local `feature/login`
+            // and a remote `origin/main` identically, and the badge's colour is
+            // supposed to say which is which. See ``CommitInfo/refs``.
+            "log", "--topo-order", "--decorate=full",
             "--max-count=\(limit)", "--skip=\(skip)",
             "--format=format:\(CommitInfo.format)",
         ]
-        if all { arguments.append("--all") }
+        // **Not `--all`.** `--all` means every ref under `refs/`, which drags in
+        // two things that are not history: `refs/stash`, whose entries are merge
+        // commits that fork the graph into a knot beside commits nobody made,
+        // and Grove's own `refs/grove/backup/*`, which exist so a discard can be
+        // undone and have no business being read as work. Stashes have their own
+        // section; backups have the recovery window.
+        //
+        // Naming the three ref namespaces a history view is actually about is
+        // both narrower and clearer than `--all --exclude=…`, which has to grow
+        // a new exclusion every time anything writes a ref.
+        if all { arguments += ["--branches", "--tags", "--remotes"] }
         let command = arguments
 
         let result = try await limiter.withSlot {
@@ -881,12 +965,18 @@ actor RepoEngine {
     /// Which files a commit touched, as `FileChange` values so the existing rows
     /// can draw them.
     ///
-    /// A merge is diffed against its **first parent** — the default for
-    /// `git show` — because the alternative is every file the branch touched,
-    /// which is not what the merge did.
+    /// `--first-parent` is load-bearing and was missing. Left to itself
+    /// `git show` renders a merge as a **combined diff** — `diff --cc`, `@@@`
+    /// hunk headers, one column per parent — which is a different format, not a
+    /// terser one. It reports almost nothing for a clean merge, and any parser
+    /// reading it as an ordinary patch sees the `--- a/x` / `+++ b/x` pair as a
+    /// rename of `a/x` to `b/x`. Against the first parent a merge is a plain
+    /// two-sided diff saying what arrived on this branch, which is both
+    /// readable and the question anyone is asking.
     func commitChanges(_ oid: String) async throws -> [FileChange] {
         let nameStatus = [
-            "show", "--format=", "--name-status", "-z", "--find-renames", "--no-textconv", oid,
+            "show", "--format=", "--name-status", "-z", "--first-parent",
+            "--find-renames", "--no-textconv", oid,
         ]
         let result = try await limiter.withSlot {
             try await runner.read(nameStatus, in: repository.root, outputByteLimit: 64 << 20)
@@ -905,7 +995,8 @@ actor RepoEngine {
         let arguments =
             [
                 "show", "--format=", "--no-color", "--no-ext-diff", "--no-textconv",
-                "--find-renames", "--diff-algorithm=histogram", "-U\(contextLines)", oid, "--",
+                "--first-parent", "--find-renames", "--diff-algorithm=histogram",
+                "-U\(contextLines)", oid, "--",
             ] + paths
 
         let result = try await limiter.withSlot {
@@ -914,6 +1005,52 @@ actor RepoEngine {
         }
         guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
         return result.stdoutText
+    }
+
+    /// The **whole** commit as one patch.
+    ///
+    /// One `git show` rather than one per file. The changeset view renders every
+    /// file a commit touched, and spawning a process per file is the difference
+    /// between a commit opening at once and opening a file at a time — on a
+    /// thousand-file commit it is not a difference in smoothness, it is a
+    /// different order of magnitude.
+    ///
+    /// The flags are deliberately the same ones ``commitDiff(for:in:contextLines:)``
+    /// uses, `--first-parent` included, so the changeset shows exactly the files
+    /// and hunks the per-file view showed — and so a merge arrives as an
+    /// ordinary patch rather than as a combined diff the renderer would read as
+    /// a list of renames. See ``commitChanges(_:)``.
+    func commitPatch(_ oid: String, contextLines: Int = 3) async throws -> String {
+        let arguments = [
+            "show", "--format=", "--no-color", "--no-ext-diff", "--no-textconv",
+            "--first-parent", "--find-renames", "--diff-algorithm=histogram",
+            "-U\(contextLines)", "--patch", oid,
+        ]
+
+        let result = try await limiter.withSlot {
+            try await runner.read(
+                arguments, in: repository.root, timeout: .seconds(120),
+                outputByteLimit: 256 << 20)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
+        return result.stdoutText
+    }
+
+    /// How much a commit changed, as the one line above its file list.
+    ///
+    /// Read from `--numstat` rather than counted off the patch: it is a
+    /// separate, cheap command that answers while the patch itself is still
+    /// being read, so the header is complete before the diff has drawn.
+    func commitStats(_ oid: String) async throws -> CommitStats {
+        let arguments = [
+            "show", "--format=", "--numstat", "--first-parent", "--find-renames",
+            "--no-textconv", oid,
+        ]
+        let result = try await limiter.withSlot {
+            try await runner.read(arguments, in: repository.root, outputByteLimit: 64 << 20)
+        }
+        guard result.didSucceed else { throw GitError.classify(result, command: arguments) }
+        return CommitStats.parseNumstat(result.stdoutText)
     }
 
     // MARK: - Conflicts

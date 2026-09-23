@@ -26,9 +26,12 @@ nonisolated enum OnDeviceWriter {
         }
     }
 
-    static func write(statistics: String, diff: String) async throws -> GeneratedCommitMessage {
+    static func write(
+        statistics: String, diff: String, convention: CommitConvention
+    ) async throws -> GeneratedCommitMessage {
         let (body, truncated) = CommitMessagePrompt.body(
-            statistics: statistics, diff: diff, limit: CommitMessagePrompt.onDeviceDiffLimit)
+            statistics: statistics, diff: diff, limit: CommitMessagePrompt.onDeviceDiffLimit,
+            convention: convention, subjectLimit: CommitMessagePrompt.onDeviceSubjectLimit)
 
         let session = LanguageModelSession(instructions: CommitMessagePrompt.instructions)
         do {

@@ -252,10 +252,8 @@ struct DiffPane: View {
             patch: patch,
             fileName: change.displayPath,
             diffStyle: diffStyle,
-            themeType: colorScheme == .dark ? .dark : .light,
-            fontSize: Typography.diffSize,
-            canvas: Palette.diffCanvas.hexString(for: colorScheme),
-            generation: generation
+            generation: generation,
+            appearance: .resolved(for: colorScheme)
         )
     }
 
